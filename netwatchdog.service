@@ -1,0 +1,15 @@
+[Unit]
+Description=NetWatchdog v5 - Self Healing WiFi and Service Watchdog
+After=network-online.target usb-wifi-wpa.service zerotier-one.service mosquitto.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/netwatchdog
+ExecStart=/usr/bin/python3 /opt/netwatchdog/netwatchdog.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
