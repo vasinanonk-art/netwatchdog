@@ -21,7 +21,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Dict, Optional
 
-VERSION = "5.0.0"
+VERSION = "5.0.1"
 
 
 @dataclass(frozen=True)
@@ -77,6 +77,7 @@ class WatchState:
     last_onboard_heal: float = 0
     service_fail: Dict[str, int] = field(default_factory=dict)
     last_service_heal: Dict[str, float] = field(default_factory=dict)
+    missing_services: set[str] = field(default_factory=set)
 
 
 CFG = Config()
@@ -229,6 +230,10 @@ def heal_onboard(force: bool = False) -> None:
     run(f"networkctl reconfigure {CFG.onboard_if}")
 
 
+def service_exists(name: str) -> bool:
+    return run(f"systemctl cat {name}", timeout=5)
+
+
 def service_active(name: str) -> bool:
     return run(f"systemctl is-active --quiet {name}", timeout=5)
 
@@ -246,6 +251,13 @@ def restart_service(name: str) -> None:
 
 def service_watch() -> None:
     for name in CFG.watched_services:
+        if name in STATE.missing_services:
+            continue
+        if not service_exists(name):
+            STATE.missing_services.add(name)
+            STATE.service_fail.pop(name, None)
+            log.info("SERVICE_SKIP_MISSING %s", name)
+            continue
         if service_active(name):
             if STATE.service_fail.get(name, 0):
                 log.info("SERVICE_RECOVER %s", name)
@@ -273,6 +285,30 @@ def zerotier_watch() -> None:
     if "OK" not in nets or CFG.usb_ip not in active_route():
         # Do not restart here; service_watch handles service state. This is informational.
         log.info("ZEROTIER_CHECK info=%s", info[:120])
+
+
+def init_route_state() -> None:
+    route = active_route()
+    if CFG.usb_if in route and CFG.usb_ip in route:
+        STATE.active = "USB_PRIMARY"
+        log.info("START_ROUTE USB_PRIMARY existing route kept")
+        return
+    if CFG.onboard_if in route and CFG.onboard_ip in route:
+        STATE.active = "ONBOARD_PRIMARY"
+        log.warning("START_ROUTE ONBOARD_PRIMARY existing route kept")
+        return
+
+    usb = usb_health()
+    onboard = onboard_health()
+    if usb.good:
+        log.info("START_ROUTE no known route; selecting USB")
+        set_usb_primary()
+        return
+    if onboard.good:
+        log.warning("START_ROUTE no known route; selecting ONBOARD")
+        set_onboard_primary()
+        return
+    log.error("START_ROUTE no healthy Wi-Fi; route unchanged")
 
 
 def wifi_state_machine() -> None:
@@ -360,7 +396,7 @@ def main() -> None:
     log.info("NetWatchdog v%s starting", VERSION)
     log.info("USB=%s %s ONBOARD=%s %s GW=%s", CFG.usb_if, CFG.usb_ip, CFG.onboard_if, CFG.onboard_ip, CFG.gateway)
     log.info("=" * 60)
-    set_usb_primary()
+    init_route_state()
 
     while True:
         try:
