@@ -10,6 +10,17 @@ Self-healing Wi-Fi and service watchdog for the TinkerBoard smart condo server.
 - Onboard is only used for failover.
 - Critical services are monitored and restarted after repeated failures.
 
+## v5.0.1 Stable
+
+Stability-only update. No new features.
+
+- Startup no longer forces route back to USB immediately.
+- Existing healthy USB or onboard route is kept on service restart.
+- If no known route is active, NetWatchdog selects the healthy interface.
+- Missing systemd units are skipped instead of being restarted forever.
+
+Tradeoff: if a watched service unit is missing at startup and later installed without restarting NetWatchdog, it will remain skipped until `netwatchdog` is restarted.
+
 ## Install on TinkerBoard
 
 ```bash
@@ -17,6 +28,15 @@ cd /opt
 rm -rf netwatchdog
 git clone https://github.com/vasinanonk-art/netwatchdog.git
 cd netwatchdog
+chmod +x install.sh
+sudo ./install.sh
+```
+
+## Update on TinkerBoard
+
+```bash
+cd /opt/netwatchdog
+git pull
 chmod +x install.sh
 sudo ./install.sh
 ```
