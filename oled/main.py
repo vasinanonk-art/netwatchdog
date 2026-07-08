@@ -5,6 +5,7 @@ import time
 
 from . import boot, config, dashboard, network, popup, screensaver
 from .display import OLED
+from .state import RuntimeState
 
 
 def apply_brightness(display):
@@ -17,22 +18,27 @@ def apply_brightness(display):
 
 def main():
     display = OLED()
+    runtime = RuntimeState()
     apply_brightness(display)
     boot.run_boot(display)
 
     screen_index = 0
     shift_tick = 0
     last_shift = time.time()
-    last_link = network.active_link()
+
+    runtime.mark_link(network.active_link())
+    runtime.mark_internet(network.internet_ok())
 
     while True:
         apply_brightness(display)
-        current_link = network.active_link()
 
-        if popup.show_link_change(display, last_link, current_link):
+        link_event = runtime.mark_link(network.active_link())
+        net_event = runtime.mark_internet(network.internet_ok())
+
+        if popup.show_link_event(display, link_event):
             time.sleep(config.POPUP_SEC)
-
-        last_link = current_link
+        elif popup.show_internet_event(display, net_event):
+            time.sleep(config.POPUP_SEC)
 
         now = time.time()
         if now - last_shift >= config.BURN_SHIFT_SEC:
@@ -40,7 +46,7 @@ def main():
             last_shift = now
 
         screen_func = dashboard.SCREENS[screen_index % len(dashboard.SCREENS)]
-        display.text_screen(screen_func(), shift=screensaver.shift_for_tick(shift_tick))
+        display.text_screen(screen_func(runtime), shift=screensaver.shift_for_tick(shift_tick))
 
         screen_index += 1
         time.sleep(config.PAGE_INTERVAL_SEC)
