@@ -19,8 +19,8 @@ HISTORY_RETENTION_SEC = 86400
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "network": {"usb_if": "wlx6c4cbcdb7033", "usb_ip": "192.168.1.61", "onboard_if": "wlan0", "onboard_ip": "192.168.1.60", "gateway": "192.168.1.1", "internet_target": "1.1.1.1", "usb_metric": 100, "onboard_metric": 600, "wifi_fail_limit": 3, "wifi_recover_limit": 3, "heal_cooldown": 300},
-    "watchdog": {"check_interval": 10, "service_fail_limit": 3, "service_heal_cooldown": 300, "watched_services": ["netwatchdog", "netwatchdog-dashboard", "netwatchdog-oled", "zerotier-one", "mosquitto", "presence", "smart-condo-dashboard", "condo-sensor", "lgtv-mqtt"], "control_services": ["netwatchdog", "netwatchdog-dashboard", "netwatchdog-oled"], "local_ports": [{"label": "mqtt", "host": "127.0.0.1", "port": 1883}, {"label": "dashboard", "host": "127.0.0.1", "port": 8090}]},
-    "dashboard": {"host": "0.0.0.0", "port": 8090, "refresh_sec": 5},
+    "watchdog": {"check_interval": 10, "service_fail_limit": 3, "service_heal_cooldown": 300, "watched_services": ["netwatchdog", "netwatchdog-dashboard", "netwatchdog-oled", "zerotier-one", "mosquitto", "presence", "smart-condo-dashboard", "condo-sensor", "lgtv-mqtt"], "control_services": ["netwatchdog", "netwatchdog-dashboard", "netwatchdog-oled"], "local_ports": [{"label": "mqtt", "host": "127.0.0.1", "port": 1883}, {"label": "dashboard", "host": "127.0.0.1", "port": 8080}]},
+    "dashboard": {"host": "0.0.0.0", "port": 8080, "refresh_sec": 5},
     "oled": {"pixel_shift": True, "screen_saver_sec": 300, "night_brightness": 32, "day_brightness": 160, "popup_timeout_sec": 8},
 }
 
