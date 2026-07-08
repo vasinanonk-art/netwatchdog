@@ -5,24 +5,8 @@
 ```bash
 systemctl status netwatchdog-dashboard --no-pager -l
 journalctl -u netwatchdog-dashboard -n 80 --no-pager -l
-ss -lntp | grep -E '8080|8090'
+ss -lntp | grep 8090
 ```
-
-Expected:
-
-```text
-8080 NetWatchDog Dashboard
-8090 Smart Condo Dashboard
-```
-
-If NetWatchDog legacy services are using `8080`:
-
-```bash
-sudo netwatchdogctl disable-legacy
-sudo systemctl restart netwatchdog-dashboard
-```
-
-Do not stop or modify `smart-condo-dashboard.service`.
 
 ## Status not updating
 
@@ -49,14 +33,6 @@ resolvectl status || true
 ip route
 ```
 
-## OLED issue
-
-```bash
-systemctl status netwatchdog-oled --no-pager -l
-journalctl -u netwatchdog-oled -n 80 --no-pager -l
-ls /dev/i2c-*
-```
-
 ## Service restart loop
 
 ```bash
@@ -68,11 +44,5 @@ systemctl status <service> --no-pager -l
 
 ```bash
 sudo netwatchdogctl restore /var/lib/netwatchdog/backups/<file>.tar.gz
-sudo systemctl restart netwatchdog netwatchdog-dashboard netwatchdog-oled
-```
-
-## Full self test
-
-```bash
-sudo netwatchdogctl selftest
+sudo systemctl restart netwatchdog netwatchdog-dashboard
 ```
