@@ -36,13 +36,9 @@ watchdog:
 oled:
   enabled: true
   pixel_shift: true
-  burn_shift_sec: 60
   screen_saver_sec: 300
-  screen_saver_blank_sec: 2
   day_brightness: 160
   night_brightness: 32
-  day_start_hour: 7
-  night_start_hour: 22
   popup_timeout_sec: 8
 
 web:
