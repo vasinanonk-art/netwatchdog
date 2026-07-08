@@ -9,6 +9,8 @@ from .state import RuntimeState
 
 
 def apply_brightness(display):
+    if not config.BRIGHTNESS_ENABLED:
+        return
     hour = dt.datetime.now().hour
     if hour >= config.NIGHT_START_HOUR or hour < config.DAY_START_HOUR:
         display.contrast(config.NIGHT_CONTRAST)
@@ -28,6 +30,23 @@ def current_internet(status):
     return network.internet_ok()
 
 
+def status_signature(status):
+    if not status:
+        return None
+    health = status.get("health") or {}
+    return (
+        status.get("active"),
+        status.get("mode"),
+        status.get("iface"),
+        status.get("gateway"),
+        status.get("internet"),
+        health.get("score"),
+        health.get("status"),
+        status.get("last_event"),
+        status.get("last_event_at"),
+    )
+
+
 def main():
     display = OLED()
     runtime = RuntimeState()
@@ -41,6 +60,7 @@ def main():
     was_blank = False
 
     status = status_source.read_status()
+    last_signature = status_signature(status)
     runtime.update_status(status)
     runtime.mark_link(current_mode(status))
     runtime.mark_internet(current_internet(status))
@@ -49,6 +69,10 @@ def main():
         apply_brightness(display)
 
         status = status_source.read_status()
+        signature = status_signature(status)
+        if signature != last_signature:
+            last_signature = signature
+            last_activity = time.time()
         runtime.update_status(status)
 
         link_event = runtime.mark_link(current_mode(status))
