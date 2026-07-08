@@ -23,7 +23,7 @@ app.innerHTML=`<div class="grid">${card('Health',health.score+'%',cls(health.sta
 async function act(service){document.getElementById('out').textContent='Running...';document.getElementById('out').textContent=JSON.stringify(await api('/api/restart?service='+encodeURIComponent(service),{method:'POST'}),null,2)}
 async function tool(path){document.getElementById('toolOut').textContent='Running...';document.getElementById('toolOut').textContent=JSON.stringify(await api(path,{method:'POST'}),null,2)}
 async function rollback(){let c=document.getElementById('rollbackCommit').value.trim();document.getElementById('toolOut').textContent=JSON.stringify(await api('/api/rollback?commit='+encodeURIComponent(c),{method:'POST'}),null,2)}
-draw();setInterval(draw,5000);
+draw();if(path!=='/tools')setInterval(draw,5000);
 </script></body></html>'''
 
 class Handler(BaseHTTPRequestHandler):
