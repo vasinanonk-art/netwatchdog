@@ -1,8 +1,12 @@
 primary:
   interface: wlx6c4cbcdb7033
+  ip: 192.168.1.61
+  metric: 100
 
 backup:
   interface: wlan0
+  ip: 192.168.1.60
+  metric: 600
 
 gateway:
   host: 192.168.1.1
@@ -12,13 +16,31 @@ internet:
 
 status:
   path: /run/netwatchdog/status.json
-  interval: 2
+  interval: 10
+
+history:
+  path: /var/lib/netwatchdog/history.json
+  interval: 10
+  retention_hours: 24
 
 event:
-  log: /var/log/netwatchdog/events.log
+  log: /var/log/netwatchdog/events.jsonl
+
+watchdog:
+  wifi_fail_limit: 3
+  wifi_recover_limit: 3
+  heal_cooldown: 300
+  service_fail_limit: 3
+  service_heal_cooldown: 300
 
 oled:
   enabled: true
+  pixel_shift: true
+  screen_saver_sec: 300
+  day_brightness: 160
+  night_brightness: 32
+  popup_timeout_sec: 8
 
 web:
+  host: 0.0.0.0
   port: 8080
