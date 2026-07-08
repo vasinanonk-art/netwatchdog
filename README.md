@@ -16,7 +16,7 @@ Self-healing Wi-Fi, service watchdog, status writer, dashboard, history, backup,
 | Service | Purpose |
 |---|---|
 | `netwatchdog` | Wi-Fi failover, health, history, events, status writer, crash recovery for watched services |
-| `netwatchdog-dashboard` | Pure Python dashboard v2 on port `8090` |
+| `netwatchdog-dashboard` | Pure Python dashboard v2 on port `8080` |
 
 ## Install
 
@@ -48,7 +48,7 @@ cat /run/netwatchdog/status.json
 Dashboard:
 
 ```text
-http://<tinkerboard-ip>:8090/
+http://<tinkerboard-ip>:8080/
 ```
 
 ## Control
