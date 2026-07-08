@@ -3,7 +3,7 @@
 import datetime as dt
 import time
 
-from . import boot, config, dashboard, network, popup, screensaver
+from . import boot, config, dashboard, network, popup, screensaver, status_source
 from .display import OLED
 from .state import RuntimeState
 
@@ -16,6 +16,18 @@ def apply_brightness(display):
         display.contrast(config.DAY_CONTRAST)
 
 
+def current_mode(status):
+    if status and status.get("mode"):
+        return str(status.get("mode")).upper()
+    return network.active_link()
+
+
+def current_internet(status):
+    if status and "internet" in status:
+        return status_source.get_bool(status, "internet", False)
+    return network.internet_ok()
+
+
 def main():
     display = OLED()
     runtime = RuntimeState()
@@ -26,14 +38,19 @@ def main():
     shift_tick = 0
     last_shift = time.time()
 
-    runtime.mark_link(network.active_link())
-    runtime.mark_internet(network.internet_ok())
+    status = status_source.read_status()
+    runtime.update_status(status)
+    runtime.mark_link(current_mode(status))
+    runtime.mark_internet(current_internet(status))
 
     while True:
         apply_brightness(display)
 
-        link_event = runtime.mark_link(network.active_link())
-        net_event = runtime.mark_internet(network.internet_ok())
+        status = status_source.read_status()
+        runtime.update_status(status)
+
+        link_event = runtime.mark_link(current_mode(status))
+        net_event = runtime.mark_internet(current_internet(status))
 
         if popup.show_link_event(display, link_event):
             time.sleep(config.POPUP_SEC)
