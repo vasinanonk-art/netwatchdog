@@ -1,43 +1,38 @@
-# NetWatchdog v5
+# NetWatchDog v5.1 Stable
 
-Self-healing Wi-Fi and service watchdog for the TinkerBoard smart condo server.
+Self-healing Wi-Fi, service watchdog, status writer, dashboard, history, backup, update and self-test tools for a TinkerBoard running 24/7.
 
-## Current design
+## Design Rules
 
-- USB Wi-Fi `wlx6c4cbcdb7033` is primary.
-- Onboard Wi-Fi `wlan0` is backup.
-- Route is kept on USB unless USB fails repeatedly.
-- Onboard is only used for failover.
-- Critical services are monitored and restarted after repeated failures.
+- Stability > features.
+- Single source of truth: `/run/netwatchdog/status.json`.
+- Low CPU/RAM: pure Python stdlib, no React, no SQLite, no new runtime framework.
+- History uses a 24-hour ring buffer in `/var/lib/netwatchdog/history.json`.
+- Events are human readable JSONL in `/var/log/netwatchdog/events.jsonl`.
+- Config is centralized at `/etc/netwatchdog/config.yaml`.
 
-## v5.0.1 Stable
+## Services
 
-Stability-only update. No new features.
+| Service | Purpose |
+|---|---|
+| `netwatchdog` | Wi-Fi failover, health, history, events, status writer, crash recovery for watched services |
+| `netwatchdog-dashboard` | Pure Python dashboard v2 on port `8090` |
 
-- Startup no longer forces route back to USB immediately.
-- Existing healthy USB or onboard route is kept on service restart.
-- If no known route is active, NetWatchdog selects the healthy interface.
-- Missing systemd units are skipped instead of being restarted forever.
-
-Tradeoff: if a watched service unit is missing at startup and later installed without restarting NetWatchdog, it will remain skipped until `netwatchdog` is restarted.
-
-## Install on TinkerBoard
+## Install
 
 ```bash
 cd /opt
-rm -rf netwatchdog
-git clone https://github.com/vasinanonk-art/netwatchdog.git
+sudo rm -rf netwatchdog
+git clone -b feature/oled-v1 https://github.com/vasinanonk-art/netwatchdog.git
 cd netwatchdog
-chmod +x install.sh
 sudo ./install.sh
 ```
 
-## Update on TinkerBoard
+## Update
 
 ```bash
 cd /opt/netwatchdog
-git pull
-chmod +x install.sh
+git pull --ff-only
 sudo ./install.sh
 ```
 
@@ -45,20 +40,62 @@ sudo ./install.sh
 
 ```bash
 systemctl status netwatchdog --no-pager -l
+systemctl status netwatchdog-dashboard --no-pager -l
 journalctl -u netwatchdog -n 80 --no-pager -l
-ip route get 1.1.1.1
+cat /run/netwatchdog/status.json
 ```
 
-Expected route:
+Dashboard:
 
 ```text
-1.1.1.1 via 192.168.1.1 dev wlx6c4cbcdb7033 src 192.168.1.61
+http://<tinkerboard-ip>:8090/
 ```
 
-## Rollback
+## Control
+
+Only allowlisted systemd services can be restarted. No arbitrary shell execution.
 
 ```bash
-systemctl disable --now netwatchdog
-ip route replace default via 192.168.1.1 dev wlx6c4cbcdb7033 src 192.168.1.61 metric 100
-ip route replace default via 192.168.1.1 dev wlan0 src 192.168.1.60 metric 600
+sudo netwatchdogctl restart netwatchdog
+sudo netwatchdogctl restart netwatchdog-dashboard
+sudo netwatchdogctl restart netwatchdog-oled
 ```
+
+## Backup / Restore
+
+```bash
+sudo netwatchdogctl backup
+sudo netwatchdogctl restore /var/lib/netwatchdog/backups/netwatchdog-backup-YYYYMMDD-HHMMSS.tar.gz
+```
+
+## Update Manager
+
+```bash
+cd /opt/netwatchdog
+sudo netwatchdogctl update info
+sudo netwatchdogctl update pull
+sudo netwatchdogctl rollback <commit_sha>
+```
+
+Rollback uses `git reset --hard <commit_sha>`. Blast radius: local uncommitted changes in `/opt/netwatchdog` are discarded.
+
+## Self Test
+
+```bash
+sudo netwatchdogctl selftest
+```
+
+Checks OLED/I2C, disk, CPU temp, memory, Wi-Fi, gateway, internet, and systemd services.
+
+## OLED Contract
+
+OLED must consume `/run/netwatchdog/status.json`. v5.1 keeps that contract stable. Burn-in settings live in `/etc/netwatchdog/config.yaml` under `oled`.
+
+If an OLED service exists as `netwatchdog-oled`, NetWatchDog monitors and restarts it after repeated failure.
+
+## Tradeoffs / Failure Points
+
+- JSON history is intentionally simple and low overhead. If power is cut during write, atomic replace protects the file, but the latest sample can be lost.
+- Config parser supports the YAML subset used by this project. It avoids adding PyYAML to keep dependencies low.
+- Dashboard restart control is allowlist-only. Any new controllable service must be added to `watchdog.control_services`.
+- `rollback` is powerful and destructive to local uncommitted repo changes. Use only after backup.
