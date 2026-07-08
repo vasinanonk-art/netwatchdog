@@ -1,13 +1,12 @@
 # NetWatchDog v5.1 Stable
 
-Self-healing Wi-Fi, service watchdog, OLED front panel, dashboard, history, backup, update and self-test tools for a TinkerBoard running 24/7.
+Self-healing Wi-Fi, service watchdog, status writer, dashboard, history, backup, update and self-test tools for a TinkerBoard running 24/7.
 
-## Hard Rules
+## Design Rules
 
-- `8080` = NetWatchDog Dashboard.
-- `8090` = Smart Condo Dashboard. Do not bind, stop, restart, reconfigure, or modify it.
+- Stability > features.
 - Single source of truth: `/run/netwatchdog/status.json`.
-- No React, no SQLite, no unnecessary runtime dependency.
+- Low CPU/RAM: pure Python stdlib, no React, no SQLite, no new runtime framework.
 - History uses a 24-hour ring buffer in `/var/lib/netwatchdog/history.json`.
 - Events are human readable JSONL in `/var/log/netwatchdog/events.jsonl`.
 - Config is centralized at `/etc/netwatchdog/config.yaml`.
@@ -18,12 +17,6 @@ Self-healing Wi-Fi, service watchdog, OLED front panel, dashboard, history, back
 |---|---|
 | `netwatchdog` | Wi-Fi failover, health, history, events, status writer, crash recovery for watched services |
 | `netwatchdog-dashboard` | Pure Python dashboard v2 on port `8080` |
-| `netwatchdog-oled` | OLED front panel with burn-in protection |
-
-Legacy services are disabled by installer and must not be recreated:
-
-- `netwatchdog-web`
-- `netwatchdog-status`
 
 ## Install
 
@@ -32,7 +25,7 @@ cd /opt
 sudo rm -rf netwatchdog
 git clone -b feature/oled-v1 https://github.com/vasinanonk-art/netwatchdog.git
 cd netwatchdog
-sudo sh install.sh
+sudo ./install.sh
 ```
 
 ## Update
@@ -40,7 +33,7 @@ sudo sh install.sh
 ```bash
 cd /opt/netwatchdog
 git pull --ff-only
-sudo sh install.sh
+sudo ./install.sh
 ```
 
 ## Check
@@ -48,16 +41,8 @@ sudo sh install.sh
 ```bash
 systemctl status netwatchdog --no-pager -l
 systemctl status netwatchdog-dashboard --no-pager -l
-systemctl status netwatchdog-oled --no-pager -l
-ss -lntp | grep -E '8080|8090'
+journalctl -u netwatchdog -n 80 --no-pager -l
 cat /run/netwatchdog/status.json
-```
-
-Expected port ownership:
-
-```text
-8080 NetWatchDog Dashboard
-8090 Smart Condo Dashboard
 ```
 
 Dashboard:
@@ -68,13 +53,12 @@ http://<tinkerboard-ip>:8080/
 
 ## Control
 
-Only allowlisted NetWatchDog services can be restarted. Smart Condo Dashboard is blocked.
+Only allowlisted systemd services can be restarted. No arbitrary shell execution.
 
 ```bash
 sudo netwatchdogctl restart netwatchdog
 sudo netwatchdogctl restart netwatchdog-dashboard
 sudo netwatchdogctl restart netwatchdog-oled
-sudo netwatchdogctl disable-legacy
 ```
 
 ## Backup / Restore
@@ -83,8 +67,6 @@ sudo netwatchdogctl disable-legacy
 sudo netwatchdogctl backup
 sudo netwatchdogctl restore /var/lib/netwatchdog/backups/netwatchdog-backup-YYYYMMDD-HHMMSS.tar.gz
 ```
-
-Restore only accepts the NetWatchDog config, status, history and events paths.
 
 ## Update Manager
 
@@ -95,7 +77,7 @@ sudo netwatchdogctl update pull
 sudo netwatchdogctl rollback <commit_sha>
 ```
 
-Rollback refuses to run when the working tree is dirty. Blast radius if used: repo files in `/opt/netwatchdog` are reset to the selected commit.
+Rollback uses `git reset --hard <commit_sha>`. Blast radius: local uncommitted changes in `/opt/netwatchdog` are discarded.
 
 ## Self Test
 
@@ -103,24 +85,17 @@ Rollback refuses to run when the working tree is dirty. Blast radius if used: re
 sudo netwatchdogctl selftest
 ```
 
-Checks OLED/I2C, disk, CPU temp, memory, USB Wi-Fi, onboard Wi-Fi, gateway, internet, legacy services disabled, Smart Condo Dashboard still active, and monitored systemd services.
+Checks OLED/I2C, disk, CPU temp, memory, Wi-Fi, gateway, internet, and systemd services.
 
-## OLED Burn Protection
+## OLED Contract
 
-OLED keeps the existing layout and adds:
+OLED must consume `/run/netwatchdog/status.json`. v5.1 keeps that contract stable. Burn-in settings live in `/etc/netwatchdog/config.yaml` under `oled`.
 
-- Dirty page updates.
-- Pixel shift.
-- Short blank screen saver cycle.
-- Night brightness schedule.
-- Popup timeout.
-- Adaptive text truncation for long interface names.
-
-Config keys live under `oled` in `/etc/netwatchdog/config.yaml`.
+If an OLED service exists as `netwatchdog-oled`, NetWatchDog monitors and restarts it after repeated failure.
 
 ## Tradeoffs / Failure Points
 
-- JSON history is intentionally simple and low overhead. Atomic writes protect the file, but the latest sample can still be lost on hard power cut.
-- Config parser supports the YAML subset used by this project. It avoids PyYAML to keep dependencies low.
-- Dashboard control is allowlist-only. New controllable NetWatchDog services must be added to `watchdog.control_services`.
-- Update and rollback require a clean git working tree for safety.
+- JSON history is intentionally simple and low overhead. If power is cut during write, atomic replace protects the file, but the latest sample can be lost.
+- Config parser supports the YAML subset used by this project. It avoids adding PyYAML to keep dependencies low.
+- Dashboard restart control is allowlist-only. Any new controllable service must be added to `watchdog.control_services`.
+- `rollback` is powerful and destructive to local uncommitted repo changes. Use only after backup.
