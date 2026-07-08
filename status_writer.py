@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """NetWatchDog shared runtime status writer.
 
-Writes status.json for OLED/Web/API consumers.
+Writes /run/netwatchdog/status.json for OLED/Web/API consumers.
 Standalone and low-risk: it does not change routing, WiFi, or failover.
 """
+
+from __future__ import annotations
 
 import json
 import os
@@ -15,9 +17,10 @@ from pathlib import Path
 
 from core_config import get, get_float, load_config
 from event_engine import EventLogger
-from health_engine import score as health_score
+from health_engine import score as health_score, status as health_status
+from history_engine import append as append_history
 
-VERSION = "5.1.0-oled"
+VERSION = "5.1.0"
 
 
 def run(cmd, timeout=2):
@@ -25,6 +28,11 @@ def run(cmd, timeout=2):
         return subprocess.check_output(cmd, stderr=subprocess.DEVNULL, text=True, timeout=timeout)
     except Exception:
         return ""
+
+
+def git_commit():
+    out = run(["git", "rev-parse", "--short", "HEAD"], timeout=2).strip()
+    return out or "unknown"
 
 
 def ping_ms(host):
@@ -81,9 +89,8 @@ def cpu_percent():
         idle = vals[3] + vals[4]
         total = sum(vals)
         return idle, total
-
     idle1, total1 = read_stat()
-    time.sleep(0.15)
+    time.sleep(0.05)
     idle2, total2 = read_stat()
     total_delta = max(1, total2 - total1)
     return int(100 * (1 - ((idle2 - idle1) / total_delta)))
@@ -123,8 +130,9 @@ def main():
     gateway_host = os.environ.get("NWD_GATEWAY_HOST", get(cfg, "gateway.host"))
     internet_host = os.environ.get("NWD_INTERNET_HOST", get(cfg, "internet.host"))
     status_path = Path(os.environ.get("NWD_STATUS_PATH", get(cfg, "status.path")))
+    history_path = Path(os.environ.get("NWD_HISTORY_PATH", get(cfg, "history.path", "/var/lib/netwatchdog/history.json")))
     event_log = os.environ.get("NWD_EVENT_LOG", get(cfg, "event.log"))
-    interval_sec = float(os.environ.get("NWD_STATUS_INTERVAL", get_float(cfg, "status.interval", 2)))
+    interval_sec = max(10.0, float(os.environ.get("NWD_STATUS_INTERVAL", get_float(cfg, "status.interval", 10))))
     events = EventLogger(event_log)
 
     boot_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -133,7 +141,8 @@ def main():
     retry = 0
     last_mode = None
     last_internet = None
-    last_event = "BOOT"
+    last_gateway = None
+    last_event = "Boot"
     last_event_ts = boot_iso
     events.write("BOOT", version=VERSION)
 
@@ -149,32 +158,55 @@ def main():
         temp = temp_c()
         rssi = wifi_rssi(iface)
         ip = ip_addr(iface)
+        now_ts = int(time.time())
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         if last_mode is not None and mode != last_mode:
             if mode == "BACKUP":
                 failover_count += 1
-                last_event = "FAILOVER"
+                last_event = "Failover"
+                events.write("FAILOVER", mode=mode, iface=iface)
             elif mode == "PRIMARY":
                 restore_count += 1
-                last_event = "RESTORED"
+                last_event = "Restored"
+                events.write("RESTORED", mode=mode, iface=iface)
             else:
-                last_event = "LINK FAIL"
+                last_event = "Gateway Lost"
+                events.write("GW LOST", mode=mode, iface=iface)
             last_event_ts = now_iso
-            events.write(last_event, mode=mode, iface=iface)
+
+        if last_gateway is not None and gateway_ok != last_gateway:
+            last_event = "Restored" if gateway_ok else "Gateway Lost"
+            last_event_ts = now_iso
+            events.write("GW OK" if gateway_ok else "GW LOST", target=gateway_host)
 
         if last_internet is not None and internet_ok != last_internet:
-            last_event = "NET OK" if internet_ok else "NET LOST"
+            last_event = "Restored" if internet_ok else "Internet Lost"
             last_event_ts = now_iso
-            events.write(last_event, target=internet_host)
+            events.write("NET OK" if internet_ok else "NET LOST", target=internet_host)
 
         retry = 0 if internet_ok else min(999, retry + 1)
         last_mode = mode
+        last_gateway = gateway_ok
         last_internet = internet_ok
         health, health_reasons = health_score(gateway_ok, internet_ok, cpu, ram, temp, rssi, retry)
+        status = health_status(health)
+
+        sample = {
+            "ts": now_ts,
+            "cpu": cpu,
+            "ram": ram,
+            "temp": temp,
+            "rssi": rssi,
+            "gateway_ms": gw_ms,
+            "internet_ms": net_ms,
+            "health": health,
+        }
+        append_history(history_path, sample, now_ts)
 
         data = {
             "version": VERSION,
+            "git_commit": git_commit(),
             "mode": mode,
             "iface": iface or "",
             "gateway": gateway_ok,
@@ -195,6 +227,7 @@ def main():
             "ip": ip,
             "rssi": rssi,
             "health": health,
+            "health_status": status,
             "health_reasons": health_reasons,
             "updated_at": now_iso,
         }
