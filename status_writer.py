@@ -1,9 +1,8 @@
 #!/usr/bin/env python3
 """NetWatchDog shared runtime status writer.
 
-Writes /run/netwatchdog/status.json for OLED/Web/API consumers.
-This is intentionally standalone and low-risk: it does not change routing,
-WiFi, failover, or existing NetWatchDog behavior.
+Writes status.json for OLED/Web/API consumers.
+Standalone and low-risk: it does not change routing, WiFi, or failover.
 """
 
 import json
@@ -14,14 +13,11 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from core_config import get, get_float, load_config
+from event_engine import EventLogger
+from health_engine import score as health_score
+
 VERSION = "5.1.0-oled"
-PRIMARY_IFACE = os.environ.get("NWD_PRIMARY_IFACE", "wlx6c4cbcdb7033")
-BACKUP_IFACE = os.environ.get("NWD_BACKUP_IFACE", "wlan0")
-GATEWAY_HOST = os.environ.get("NWD_GATEWAY_HOST", "192.168.1.1")
-INTERNET_HOST = os.environ.get("NWD_INTERNET_HOST", "1.1.1.1")
-STATUS_PATH = Path(os.environ.get("NWD_STATUS_PATH", "/run/netwatchdog/status.json"))
-EVENT_LOG = Path(os.environ.get("NWD_EVENT_LOG", "/var/log/netwatchdog/events.log"))
-INTERVAL_SEC = float(os.environ.get("NWD_STATUS_INTERVAL", "2"))
 
 
 def run(cmd, timeout=2):
@@ -47,19 +43,19 @@ def iface_up(iface):
     return path.exists() and path.read_text().strip() == "up"
 
 
-def active_mode():
-    if iface_up(PRIMARY_IFACE):
+def active_mode(primary_iface, backup_iface):
+    if iface_up(primary_iface):
         return "PRIMARY"
-    if iface_up(BACKUP_IFACE):
+    if iface_up(backup_iface):
         return "BACKUP"
     return "LINK FAIL"
 
 
-def active_iface(mode):
+def active_iface(mode, primary_iface, backup_iface):
     if mode == "PRIMARY":
-        return PRIMARY_IFACE
+        return primary_iface
     if mode == "BACKUP":
-        return BACKUP_IFACE
+        return backup_iface
     return None
 
 
@@ -113,23 +109,6 @@ def uptime_sec():
     return int(float(Path("/proc/uptime").read_text().split()[0]))
 
 
-def health_score(gateway_ok, internet_ok, cpu, ram, temp, rssi):
-    score = 100
-    if not gateway_ok:
-        score -= 30
-    if not internet_ok:
-        score -= 35
-    if cpu >= 90:
-        score -= 10
-    if ram >= 90:
-        score -= 10
-    if temp >= 75:
-        score -= 10
-    if rssi is not None and rssi < -75:
-        score -= 5
-    return max(0, min(100, score))
-
-
 def write_json_atomic(path, data):
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -137,14 +116,17 @@ def write_json_atomic(path, data):
     tmp.replace(path)
 
 
-def log_event(event):
-    EVENT_LOG.parent.mkdir(parents=True, exist_ok=True)
-    ts = datetime.now().astimezone().isoformat(timespec="seconds")
-    with EVENT_LOG.open("a") as f:
-        f.write(f"{ts} {event}\n")
-
-
 def main():
+    cfg = load_config()
+    primary_iface = os.environ.get("NWD_PRIMARY_IFACE", get(cfg, "primary.interface"))
+    backup_iface = os.environ.get("NWD_BACKUP_IFACE", get(cfg, "backup.interface"))
+    gateway_host = os.environ.get("NWD_GATEWAY_HOST", get(cfg, "gateway.host"))
+    internet_host = os.environ.get("NWD_INTERNET_HOST", get(cfg, "internet.host"))
+    status_path = Path(os.environ.get("NWD_STATUS_PATH", get(cfg, "status.path")))
+    event_log = os.environ.get("NWD_EVENT_LOG", get(cfg, "event.log"))
+    interval_sec = float(os.environ.get("NWD_STATUS_INTERVAL", get_float(cfg, "status.interval", 2)))
+    events = EventLogger(event_log)
+
     boot_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
     failover_count = 0
     restore_count = 0
@@ -153,12 +135,13 @@ def main():
     last_internet = None
     last_event = "BOOT"
     last_event_ts = boot_iso
+    events.write("BOOT", version=VERSION)
 
     while True:
-        mode = active_mode()
-        iface = active_iface(mode)
-        gw_ms = ping_ms(GATEWAY_HOST)
-        net_ms = ping_ms(INTERNET_HOST)
+        mode = active_mode(primary_iface, backup_iface)
+        iface = active_iface(mode, primary_iface, backup_iface)
+        gw_ms = ping_ms(gateway_host)
+        net_ms = ping_ms(internet_host)
         gateway_ok = gw_ms is not None
         internet_ok = net_ms is not None
         cpu = cpu_percent()
@@ -166,7 +149,6 @@ def main():
         temp = temp_c()
         rssi = wifi_rssi(iface)
         ip = ip_addr(iface)
-
         now_iso = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
         if last_mode is not None and mode != last_mode:
@@ -179,16 +161,17 @@ def main():
             else:
                 last_event = "LINK FAIL"
             last_event_ts = now_iso
-            log_event(last_event)
+            events.write(last_event, mode=mode, iface=iface)
 
         if last_internet is not None and internet_ok != last_internet:
             last_event = "NET OK" if internet_ok else "NET LOST"
             last_event_ts = now_iso
-            log_event(last_event)
+            events.write(last_event, target=internet_host)
 
         retry = 0 if internet_ok else min(999, retry + 1)
         last_mode = mode
         last_internet = internet_ok
+        health, health_reasons = health_score(gateway_ok, internet_ok, cpu, ram, temp, rssi, retry)
 
         data = {
             "version": VERSION,
@@ -211,11 +194,12 @@ def main():
             "temp": temp,
             "ip": ip,
             "rssi": rssi,
-            "health": health_score(gateway_ok, internet_ok, cpu, ram, temp, rssi),
+            "health": health,
+            "health_reasons": health_reasons,
             "updated_at": now_iso,
         }
-        write_json_atomic(STATUS_PATH, data)
-        time.sleep(INTERVAL_SEC)
+        write_json_atomic(status_path, data)
+        time.sleep(interval_sec)
 
 
 if __name__ == "__main__":
