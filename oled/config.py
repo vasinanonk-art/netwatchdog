@@ -1,9 +1,9 @@
 """NetWatchDog OLED configuration."""
 
 try:
-    from core_config import get, get_int, load_config
+    from core_config import get, get_bool, get_int, load_config
 except Exception:
-    get = get_int = load_config = None
+    get = get_bool = get_int = load_config = None
 
 _cfg = load_config() if load_config else {}
 
@@ -22,12 +22,13 @@ STATUS_PATHS = [
 ]
 
 PAGE_INTERVAL_SEC = 3
-POPUP_SEC = get_int(_cfg, "oled.popup_timeout_sec", 5) if get_int else 5
-BURN_SHIFT_SEC = 60
+POPUP_SEC = get_int(_cfg, "oled.popup_timeout_sec", 8) if get_int else 8
+PIXEL_SHIFT = get_bool(_cfg, "oled.pixel_shift", True) if get_bool else True
+BURN_SHIFT_SEC = get_int(_cfg, "oled.burn_shift_sec", 60) if get_int else 60
 SCREEN_SAVER_SEC = get_int(_cfg, "oled.screen_saver_sec", 300) if get_int else 300
-SCREEN_SAVER_BLANK_SEC = 2
+SCREEN_SAVER_BLANK_SEC = get_int(_cfg, "oled.screen_saver_blank_sec", 2) if get_int else 2
 
 DAY_CONTRAST = get_int(_cfg, "oled.day_brightness", 160) if get_int else 160
 NIGHT_CONTRAST = get_int(_cfg, "oled.night_brightness", 32) if get_int else 32
-DAY_START_HOUR = 7
-NIGHT_START_HOUR = 22
+DAY_START_HOUR = get_int(_cfg, "oled.day_start_hour", 7) if get_int else 7
+NIGHT_START_HOUR = get_int(_cfg, "oled.night_start_hour", 22) if get_int else 22
