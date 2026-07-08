@@ -1,410 +1,195 @@
 #!/usr/bin/env python3
-"""
-NetWatchdog v5
-USB Wi-Fi primary / onboard Wi-Fi backup watchdog for TinkerBoard.
-
-Design:
-- USB adapter is the preferred route.
-- Onboard Wi-Fi is standby/failover.
-- Health checks are conservative: Wi-Fi link + gateway ping.
-- Services are checked and restarted only after repeated failure.
-- All logs go to journald via stdout when run as systemd.
-"""
-
 from __future__ import annotations
 
-import logging
-import re
-import socket
-import subprocess
-import time
+import logging, re, socket, subprocess, time
 from dataclasses import dataclass, field
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
-VERSION = "5.0.1"
-
+from netwatchdog_common import STATUS_PATH, VERSION, append_event, atomic_write_json, cpu_percent, cpu_temp_c, disk_percent, ensure_dirs, git_commit, health_score, load_config, memory_percent, update_history
 
 @dataclass(frozen=True)
 class Config:
-    usb_if: str = "wlx6c4cbcdb7033"
-    usb_ip: str = "192.168.1.61"
-    onboard_if: str = "wlan0"
-    onboard_ip: str = "192.168.1.60"
-    gateway: str = "192.168.1.1"
-    usb_metric: int = 100
-    onboard_metric: int = 600
-    check_interval: int = 30
-    wifi_fail_limit: int = 3
-    wifi_recover_limit: int = 3
-    heal_cooldown: int = 300
-    service_fail_limit: int = 3
-    service_heal_cooldown: int = 300
-    watched_services: tuple[str, ...] = (
-        "zerotier-one",
-        "mosquitto",
-        "presence",
-        "smart-condo-dashboard",
-        "condo-sensor",
-        "lgtv-mqtt",
-    )
-    local_ports: tuple[tuple[str, str, int], ...] = (
-        ("mqtt", "127.0.0.1", 1883),
-        ("dashboard", "127.0.0.1", 8090),
-    )
-
+    usb_if: str; usb_ip: str; onboard_if: str; onboard_ip: str; gateway: str; internet_target: str
+    usb_metric: int; onboard_metric: int; check_interval: int; wifi_fail_limit: int; wifi_recover_limit: int
+    heal_cooldown: int; service_fail_limit: int; service_heal_cooldown: int
+    watched_services: tuple[str, ...]; local_ports: tuple[tuple[str, str, int], ...]
 
 @dataclass
 class WifiHealth:
-    iface: str
-    connected: bool
-    gateway_ms: Optional[float]
-    signal_dbm: Optional[int]
-    freq_mhz: Optional[float]
-    score: int
-
+    iface: str; connected: bool; gateway_ms: Optional[float]; signal_dbm: Optional[int]; freq_mhz: Optional[float]; score: int
     @property
     def good(self) -> bool:
         return self.connected and self.gateway_ms is not None and self.score >= 70
 
-
 @dataclass
 class WatchState:
     active: str = "USB_PRIMARY"
-    usb_fail: int = 0
-    usb_recover: int = 0
-    onboard_fail: int = 0
-    last_usb_heal: float = 0
-    last_onboard_heal: float = 0
+    usb_fail: int = 0; usb_recover: int = 0; onboard_fail: int = 0
+    last_usb_heal: float = 0; last_onboard_heal: float = 0
     service_fail: Dict[str, int] = field(default_factory=dict)
     last_service_heal: Dict[str, float] = field(default_factory=dict)
     missing_services: set[str] = field(default_factory=set)
+    gateway_was_down: bool = False; internet_was_down: bool = False
 
+def build_config() -> Config:
+    raw = load_config(); net = raw["network"]; wd = raw["watchdog"]
+    ports = [(str(p["label"]), str(p["host"]), int(p["port"])) for p in wd.get("local_ports", []) if isinstance(p, dict)]
+    return Config(str(net["usb_if"]), str(net["usb_ip"]), str(net["onboard_if"]), str(net["onboard_ip"]), str(net["gateway"]), str(net["internet_target"]), int(net["usb_metric"]), int(net["onboard_metric"]), int(wd["check_interval"]), int(net["wifi_fail_limit"]), int(net["wifi_recover_limit"]), int(net["heal_cooldown"]), int(wd["service_fail_limit"]), int(wd["service_heal_cooldown"]), tuple(str(s) for s in wd.get("watched_services", [])), tuple(ports))
 
-CFG = Config()
-STATE = WatchState()
-
+CFG = build_config(); STATE = WatchState()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger("netwatchdog")
 
-
 def run(cmd: str, timeout: int = 10) -> bool:
-    try:
-        return subprocess.run(
-            cmd,
-            shell=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout,
-        ).returncode == 0
-    except subprocess.TimeoutExpired:
-        return False
-
+    try: return subprocess.run(cmd, shell=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=timeout).returncode == 0
+    except subprocess.TimeoutExpired: return False
 
 def output(cmd: str, timeout: int = 10) -> str:
-    try:
-        return subprocess.run(
-            cmd,
-            shell=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout,
-        ).stdout.strip()
-    except subprocess.TimeoutExpired:
-        return ""
-
+    try: return subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=timeout).stdout.strip()
+    except subprocess.TimeoutExpired: return ""
 
 def tcp(host: str, port: int, timeout: int = 2) -> bool:
     try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
+        with socket.create_connection((host, port), timeout=timeout): return True
+    except OSError: return False
 
+def ping_ms(target: str, iface: str | None = None) -> Optional[float]:
+    cmd = f"ping -c 1 -W 2 {target}" if iface is None else f"ping -I {iface} -c 1 -W 2 {target}"
+    m = re.search(r"time=([0-9.]+)", output(cmd, 5))
+    return float(m.group(1)) if m else None
 
-def iw_link(iface: str) -> str:
-    return output(f"iw dev {iface} link", timeout=5)
-
-
-def wifi_connected(iface: str) -> bool:
-    return "Connected to" in iw_link(iface)
-
-
+def iw_link(iface: str) -> str: return output(f"iw dev {iface} link", 5)
+def wifi_connected(iface: str) -> bool: return "Connected to" in iw_link(iface)
 def wifi_signal(iface: str) -> Optional[int]:
-    match = re.search(r"signal:\s*(-?\d+)", iw_link(iface))
-    return int(match.group(1)) if match else None
-
-
+    m = re.search(r"signal:\s*(-?\d+)", iw_link(iface)); return int(m.group(1)) if m else None
 def wifi_freq(iface: str) -> Optional[float]:
-    match = re.search(r"freq:\s*([0-9.]+)", iw_link(iface))
-    return float(match.group(1)) if match else None
-
-
-def gateway_ms(iface: str) -> Optional[float]:
-    text = output(f"ping -I {iface} -c 1 -W 2 {CFG.gateway}", timeout=5)
-    match = re.search(r"time=([0-9.]+)", text)
-    return float(match.group(1)) if match else None
-
+    m = re.search(r"freq:\s*([0-9.]+)", iw_link(iface)); return float(m.group(1)) if m else None
+def gateway_ms(iface: str) -> Optional[float]: return ping_ms(CFG.gateway, iface)
 
 def wifi_health(iface: str) -> WifiHealth:
-    connected = wifi_connected(iface)
-    gw = gateway_ms(iface) if connected else None
-    sig = wifi_signal(iface)
-    freq = wifi_freq(iface)
-
-    score = 0
-    if connected:
-        score += 40
-    if gw is not None:
-        score += 40
-    if sig is not None:
-        if sig >= -55:
-            score += 20
-        elif sig >= -70:
-            score += 10
-
+    connected = wifi_connected(iface); gw = gateway_ms(iface) if connected else None; sig = wifi_signal(iface); freq = wifi_freq(iface)
+    score = (40 if connected else 0) + (40 if gw is not None else 0) + (20 if sig is not None and sig >= -55 else 10 if sig is not None and sig >= -70 else 0)
     return WifiHealth(iface, connected, gw, sig, freq, score)
 
-
-def usb_health() -> WifiHealth:
-    return wifi_health(CFG.usb_if)
-
-
-def onboard_health() -> WifiHealth:
-    return wifi_health(CFG.onboard_if)
-
-
-def active_route() -> str:
-    return output("ip route get 1.1.1.1", timeout=5)
-
+def usb_health() -> WifiHealth: return wifi_health(CFG.usb_if)
+def onboard_health() -> WifiHealth: return wifi_health(CFG.onboard_if)
+def active_route() -> str: return output(f"ip route get {CFG.internet_target}", 5)
 
 def set_usb_primary() -> None:
     run(f"ip route replace default via {CFG.gateway} dev {CFG.usb_if} src {CFG.usb_ip} metric {CFG.usb_metric}")
     run(f"ip route replace default via {CFG.gateway} dev {CFG.onboard_if} src {CFG.onboard_ip} metric {CFG.onboard_metric}")
-    STATE.active = "USB_PRIMARY"
-    log.info("ROUTE -> USB PRIMARY")
-
+    STATE.active = "USB_PRIMARY"; append_event("Restored", "USB primary route active"); log.info("ROUTE -> USB PRIMARY")
 
 def set_onboard_primary() -> None:
     run(f"ip route replace default via {CFG.gateway} dev {CFG.onboard_if} src {CFG.onboard_ip} metric {CFG.usb_metric}")
     run(f"ip route replace default via {CFG.gateway} dev {CFG.usb_if} src {CFG.usb_ip} metric {CFG.onboard_metric}")
-    STATE.active = "ONBOARD_PRIMARY"
-    log.warning("ROUTE -> ONBOARD PRIMARY")
-
+    STATE.active = "ONBOARD_PRIMARY"; append_event("Failover", "Onboard Wi-Fi primary route active", "warning"); log.warning("ROUTE -> ONBOARD PRIMARY")
 
 def verify_usb_primary() -> bool:
-    route = active_route()
-    return CFG.usb_if in route and CFG.usb_ip in route
-
-
+    r = active_route(); return CFG.usb_if in r and CFG.usb_ip in r
 def verify_onboard_primary() -> bool:
-    route = active_route()
-    return CFG.onboard_if in route and CFG.onboard_ip in route
-
+    r = active_route(); return CFG.onboard_if in r and CFG.onboard_ip in r
 
 def heal_usb(force: bool = False) -> None:
     now = time.time()
-    if not force and now - STATE.last_usb_heal < CFG.heal_cooldown:
-        log.info("HEAL_USB skipped cooldown")
-        return
-    STATE.last_usb_heal = now
-    log.warning("HEAL_USB restart usb-wifi-wpa + link reset")
-    run("systemctl restart usb-wifi-wpa.service")
-    run(f"ip link set {CFG.usb_if} down")
-    time.sleep(2)
-    run(f"ip link set {CFG.usb_if} up")
-    run(f"networkctl reconfigure {CFG.usb_if}")
-
+    if not force and now - STATE.last_usb_heal < CFG.heal_cooldown: log.info("HEAL_USB skipped cooldown"); return
+    STATE.last_usb_heal = now; append_event("USB WiFi Heal", "Restart usb-wifi-wpa and reset link", "warning")
+    run("systemctl restart usb-wifi-wpa.service"); run(f"ip link set {CFG.usb_if} down"); time.sleep(2); run(f"ip link set {CFG.usb_if} up"); run(f"networkctl reconfigure {CFG.usb_if}")
 
 def heal_onboard(force: bool = False) -> None:
     now = time.time()
-    if not force and now - STATE.last_onboard_heal < CFG.heal_cooldown:
-        log.info("HEAL_ONBOARD skipped cooldown")
-        return
-    STATE.last_onboard_heal = now
-    log.warning("HEAL_ONBOARD restart netplan-wpa-wlan0 + link reset")
-    run("systemctl restart netplan-wpa-wlan0.service")
-    run(f"ip link set {CFG.onboard_if} down")
-    time.sleep(2)
-    run(f"ip link set {CFG.onboard_if} up")
-    run(f"networkctl reconfigure {CFG.onboard_if}")
+    if not force and now - STATE.last_onboard_heal < CFG.heal_cooldown: log.info("HEAL_ONBOARD skipped cooldown"); return
+    STATE.last_onboard_heal = now; append_event("Onboard WiFi Heal", "Restart netplan-wpa-wlan0 and reset link", "warning")
+    run("systemctl restart netplan-wpa-wlan0.service"); run(f"ip link set {CFG.onboard_if} down"); time.sleep(2); run(f"ip link set {CFG.onboard_if} up"); run(f"networkctl reconfigure {CFG.onboard_if}")
 
-
-def service_exists(name: str) -> bool:
-    return run(f"systemctl cat {name}", timeout=5)
-
-
-def service_active(name: str) -> bool:
-    return run(f"systemctl is-active --quiet {name}", timeout=5)
-
+def service_exists(name: str) -> bool: return run(f"systemctl cat {name}", 5)
+def service_active(name: str) -> bool: return run(f"systemctl is-active --quiet {name}", 5)
 
 def restart_service(name: str) -> None:
-    now = time.time()
-    last = STATE.last_service_heal.get(name, 0)
-    if now - last < CFG.service_heal_cooldown:
-        log.info("SERVICE %s restart skipped cooldown", name)
-        return
-    STATE.last_service_heal[name] = now
-    log.warning("SERVICE_RESTART %s", name)
-    run(f"systemctl restart {name}", timeout=15)
+    now = time.time(); last = STATE.last_service_heal.get(name, 0)
+    if now - last < CFG.service_heal_cooldown: log.info("SERVICE %s restart skipped cooldown", name); return
+    STATE.last_service_heal[name] = now; append_event("Service Restarted", name, "warning"); log.warning("SERVICE_RESTART %s", name); run(f"systemctl restart {name}", 15)
 
-
-def service_watch() -> None:
+def service_watch() -> dict[str, str]:
+    result: dict[str, str] = {}
     for name in CFG.watched_services:
-        if name in STATE.missing_services:
-            continue
-        if not service_exists(name):
-            STATE.missing_services.add(name)
-            STATE.service_fail.pop(name, None)
-            log.info("SERVICE_SKIP_MISSING %s", name)
-            continue
+        if name in STATE.missing_services: result[name] = "missing"; continue
+        if not service_exists(name): STATE.missing_services.add(name); STATE.service_fail.pop(name, None); result[name] = "missing"; log.info("SERVICE_SKIP_MISSING %s", name); continue
         if service_active(name):
-            if STATE.service_fail.get(name, 0):
-                log.info("SERVICE_RECOVER %s", name)
-            STATE.service_fail[name] = 0
-            continue
-        STATE.service_fail[name] = STATE.service_fail.get(name, 0) + 1
-        log.warning("SERVICE_FAIL %s %s/%s", name, STATE.service_fail[name], CFG.service_fail_limit)
-        if STATE.service_fail[name] >= CFG.service_fail_limit:
-            restart_service(name)
-            STATE.service_fail[name] = 0
+            if STATE.service_fail.get(name, 0): append_event("Service Restored", name); log.info("SERVICE_RECOVER %s", name)
+            STATE.service_fail[name] = 0; result[name] = "active"; continue
+        STATE.service_fail[name] = STATE.service_fail.get(name, 0) + 1; result[name] = "failed"; log.warning("SERVICE_FAIL %s %s/%s", name, STATE.service_fail[name], CFG.service_fail_limit)
+        if STATE.service_fail[name] >= CFG.service_fail_limit: restart_service(name); STATE.service_fail[name] = 0
+    return result
 
-
-def port_watch() -> None:
+def port_watch() -> list[dict[str, Any]]:
+    ports = []
     for label, host, port in CFG.local_ports:
-        ok = tcp(host, port)
-        if not ok:
-            log.warning("PORT_FAIL %s %s:%s", label, host, port)
-
+        ok = tcp(host, port); ports.append({"label": label, "host": host, "port": port, "ok": ok})
+        if not ok: log.warning("PORT_FAIL %s %s:%s", label, host, port)
+    return ports
 
 def zerotier_watch() -> None:
-    info = output("zerotier-cli info", timeout=5)
-    nets = output("zerotier-cli listnetworks", timeout=5)
-    if "ONLINE" not in info:
-        log.warning("ZEROTIER_OFFLINE")
-    if "OK" not in nets or CFG.usb_ip not in active_route():
-        # Do not restart here; service_watch handles service state. This is informational.
-        log.info("ZEROTIER_CHECK info=%s", info[:120])
-
+    info = output("zerotier-cli info", 5); nets = output("zerotier-cli listnetworks", 5)
+    if info and "ONLINE" not in info: log.warning("ZEROTIER_OFFLINE")
+    if nets and ("OK" not in nets or CFG.usb_ip not in active_route()): log.info("ZEROTIER_CHECK info=%s", info[:120])
 
 def init_route_state() -> None:
-    route = active_route()
-    if CFG.usb_if in route and CFG.usb_ip in route:
-        STATE.active = "USB_PRIMARY"
-        log.info("START_ROUTE USB_PRIMARY existing route kept")
-        return
-    if CFG.onboard_if in route and CFG.onboard_ip in route:
-        STATE.active = "ONBOARD_PRIMARY"
-        log.warning("START_ROUTE ONBOARD_PRIMARY existing route kept")
-        return
+    append_event("Boot", f"NetWatchDog v{VERSION} starting"); r = active_route()
+    if CFG.usb_if in r and CFG.usb_ip in r: STATE.active = "USB_PRIMARY"; log.info("START_ROUTE USB_PRIMARY existing route kept"); return
+    if CFG.onboard_if in r and CFG.onboard_ip in r: STATE.active = "ONBOARD_PRIMARY"; log.warning("START_ROUTE ONBOARD_PRIMARY existing route kept"); return
+    usb = usb_health(); onboard = onboard_health()
+    if usb.good: set_usb_primary(); return
+    if onboard.good: set_onboard_primary(); return
+    append_event("Gateway Lost", "No healthy Wi-Fi during boot", "error"); log.error("START_ROUTE no healthy Wi-Fi; route unchanged")
 
-    usb = usb_health()
-    onboard = onboard_health()
-    if usb.good:
-        log.info("START_ROUTE no known route; selecting USB")
-        set_usb_primary()
-        return
-    if onboard.good:
-        log.warning("START_ROUTE no known route; selecting ONBOARD")
-        set_onboard_primary()
-        return
-    log.error("START_ROUTE no healthy Wi-Fi; route unchanged")
-
-
-def wifi_state_machine() -> None:
-    usb = usb_health()
-    onboard = onboard_health()
-    log.info(
-        "WIFI state=%s usb_good=%s usb_score=%s usb_sig=%s usb_gw=%s onboard_good=%s onboard_score=%s onboard_sig=%s onboard_gw=%s",
-        STATE.active,
-        usb.good,
-        usb.score,
-        usb.signal_dbm,
-        usb.gateway_ms,
-        onboard.good,
-        onboard.score,
-        onboard.signal_dbm,
-        onboard.gateway_ms,
-    )
-
+def wifi_state_machine(usb: WifiHealth, onboard: WifiHealth) -> None:
+    log.info("WIFI state=%s usb_good=%s usb_score=%s usb_sig=%s usb_gw=%s onboard_good=%s onboard_score=%s onboard_sig=%s onboard_gw=%s", STATE.active, usb.good, usb.score, usb.signal_dbm, usb.gateway_ms, onboard.good, onboard.score, onboard.signal_dbm, onboard.gateway_ms)
     if STATE.active == "USB_PRIMARY":
         if usb.good:
             STATE.usb_fail = 0
-            if not verify_usb_primary():
-                log.warning("ROUTE_REPAIR -> USB")
-                set_usb_primary()
+            if not verify_usb_primary(): log.warning("ROUTE_REPAIR -> USB"); set_usb_primary()
             if not onboard.good:
                 STATE.onboard_fail += 1
-                log.info("ONBOARD_STANDBY_BAD %s", STATE.onboard_fail)
-                if STATE.onboard_fail >= CFG.wifi_fail_limit:
-                    heal_onboard()
-                    STATE.onboard_fail = 0
-            else:
-                STATE.onboard_fail = 0
+                if STATE.onboard_fail >= CFG.wifi_fail_limit: heal_onboard(); STATE.onboard_fail = 0
+            else: STATE.onboard_fail = 0
             return
-
-        STATE.usb_fail += 1
-        log.warning("USB_FAIL %s/%s", STATE.usb_fail, CFG.wifi_fail_limit)
-        heal_usb()
+        STATE.usb_fail += 1; log.warning("USB_FAIL %s/%s", STATE.usb_fail, CFG.wifi_fail_limit); heal_usb()
         if STATE.usb_fail >= CFG.wifi_fail_limit:
-            if onboard.good:
-                log.warning("FAILOVER USB -> ONBOARD")
-                set_onboard_primary()
-                STATE.usb_fail = 0
-                STATE.usb_recover = 0
-            else:
-                log.error("BOTH_WIFI_BAD")
+            if onboard.good: log.warning("FAILOVER USB -> ONBOARD"); set_onboard_primary(); STATE.usb_fail = 0; STATE.usb_recover = 0
+            else: append_event("Gateway Lost", "Both Wi-Fi links bad", "error"); log.error("BOTH_WIFI_BAD")
         return
-
-    if STATE.active == "ONBOARD_PRIMARY":
-        if onboard.good:
-            if not verify_onboard_primary():
-                log.warning("ROUTE_REPAIR -> ONBOARD")
-                set_onboard_primary()
-            if usb.good:
-                STATE.usb_recover += 1
-                log.info("USB_RECOVER %s/%s", STATE.usb_recover, CFG.wifi_recover_limit)
-                if STATE.usb_recover >= CFG.wifi_recover_limit:
-                    log.warning("FAILBACK -> USB")
-                    set_usb_primary()
-                    STATE.usb_recover = 0
-                    STATE.usb_fail = 0
-            else:
-                STATE.usb_recover = 0
-                heal_usb()
-            return
-
-        log.error("ONBOARD_PRIMARY_BAD")
-        heal_onboard()
+    if onboard.good:
+        if not verify_onboard_primary(): log.warning("ROUTE_REPAIR -> ONBOARD"); set_onboard_primary()
         if usb.good:
-            log.warning("FAILBACK ONBOARD -> USB")
-            set_usb_primary()
-        else:
-            log.error("BOTH_WIFI_BAD")
+            STATE.usb_recover += 1
+            if STATE.usb_recover >= CFG.wifi_recover_limit: log.warning("FAILBACK -> USB"); set_usb_primary(); STATE.usb_recover = 0; STATE.usb_fail = 0
+        else: STATE.usb_recover = 0; heal_usb()
+        return
+    heal_onboard()
+    if usb.good: log.warning("FAILBACK ONBOARD -> USB"); set_usb_primary()
+    else: append_event("Gateway Lost", "Both Wi-Fi links bad", "error"); log.error("BOTH_WIFI_BAD")
 
+def write_status(usb: WifiHealth, onboard: WifiHealth, services: dict[str, str], ports: list[dict[str, Any]]) -> None:
+    now = int(time.time()); active_iface = CFG.usb_if if STATE.active == "USB_PRIMARY" else CFG.onboard_if; active = usb if active_iface == CFG.usb_if else onboard
+    internet = ping_ms(CFG.internet_target, active_iface if active.connected else None); cpu = cpu_percent(); ram = memory_percent(); temp = cpu_temp_c(); disk = disk_percent("/")
+    health = health_score(cpu, ram, temp, active.signal_dbm, active.gateway_ms, internet)
+    if active.gateway_ms is None and not STATE.gateway_was_down: append_event("Gateway Lost", CFG.gateway, "error"); STATE.gateway_was_down = True
+    elif active.gateway_ms is not None and STATE.gateway_was_down: append_event("Restored", "Gateway reachable"); STATE.gateway_was_down = False
+    if internet is None and not STATE.internet_was_down: append_event("Internet Lost", CFG.internet_target, "error"); STATE.internet_was_down = True
+    elif internet is not None and STATE.internet_was_down: append_event("Restored", "Internet reachable"); STATE.internet_was_down = False
+    sample = {"ts": now, "cpu": cpu, "ram": ram, "temp": temp, "rssi": active.signal_dbm, "gateway_ms": active.gateway_ms, "internet_ms": internet, "health": health["score"]}
+    update_history(sample)
+    atomic_write_json(STATUS_PATH, {"version": VERSION, "git_commit": git_commit(), "ts": now, "uptime_sec": int(time.monotonic()), "active": STATE.active, "route": active_route(), "health": health, "metrics": {"cpu": cpu, "ram": ram, "temp": temp, "disk": disk}, "network": {"usb": usb.__dict__, "onboard": onboard.__dict__, "internet_ms": internet, "gateway": CFG.gateway, "internet_target": CFG.internet_target}, "services": services, "ports": ports})
 
 def cycle() -> None:
-    wifi_state_machine()
-    service_watch()
-    port_watch()
-    zerotier_watch()
-    log.info("ACTIVE_ROUTE %s", active_route())
-
+    usb = usb_health(); onboard = onboard_health(); wifi_state_machine(usb, onboard); services = service_watch(); ports = port_watch(); zerotier_watch(); write_status(usb, onboard, services, ports); log.info("ACTIVE_ROUTE %s", active_route())
 
 def main() -> None:
-    log.info("=" * 60)
-    log.info("NetWatchdog v%s starting", VERSION)
-    log.info("USB=%s %s ONBOARD=%s %s GW=%s", CFG.usb_if, CFG.usb_ip, CFG.onboard_if, CFG.onboard_ip, CFG.gateway)
-    log.info("=" * 60)
-    init_route_state()
-
+    ensure_dirs(); log.info("NetWatchDog v%s starting", VERSION); log.info("USB=%s %s ONBOARD=%s %s GW=%s", CFG.usb_if, CFG.usb_ip, CFG.onboard_if, CFG.onboard_ip, CFG.gateway); init_route_state()
     while True:
-        try:
-            cycle()
-        except Exception as exc:  # noqa: BLE001
-            log.exception("UNHANDLED_EXCEPTION %s", exc)
-        time.sleep(CFG.check_interval)
+        try: cycle()
+        except Exception as exc: append_event("Watchdog Error", str(exc), "error"); log.exception("UNHANDLED_EXCEPTION %s", exc)
+        time.sleep(max(5, CFG.check_interval))
 
-
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
