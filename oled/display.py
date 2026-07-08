@@ -16,6 +16,8 @@ class OLED:
         self.width = config.WIDTH
         self.height = config.HEIGHT
         self.font = ImageFont.load_default()
+        self._last_pages = None
+        self._display_on = True
         self._init_display()
 
     def cmd(self, value):
@@ -38,9 +40,15 @@ class OLED:
         self.cmd(0x81)
         self.cmd(max(0, min(255, int(value))))
 
+    def power(self, enabled):
+        enabled = bool(enabled)
+        if enabled != self._display_on:
+            self.cmd(0xAF if enabled else 0xAE)
+            self._display_on = enabled
+
     def clear(self):
         blank = Image.new("1", (self.width, self.height), 0)
-        self.show(blank)
+        self.show(blank, force=True)
 
     def image(self):
         return Image.new("1", (self.width, self.height), 0)
@@ -48,12 +56,10 @@ class OLED:
     def draw(self, image):
         return ImageDraw.Draw(image)
 
-    def show(self, image):
+    def _pages(self, image):
         image = image.convert("1")
-        for page in range(4):
-            self.cmd(0xB0 + page)
-            self.cmd(0x00)
-            self.cmd(0x10)
+        pages = []
+        for page in range(self.height // 8):
             buf = []
             for x in range(self.width):
                 b = 0
@@ -62,27 +68,48 @@ class OLED:
                     if image.getpixel((x, y)) == 255:
                         b |= 1 << bit
                 buf.append(b)
+            pages.append(buf)
+        return pages
+
+    def show(self, image, force=False):
+        self.power(True)
+        pages = self._pages(image)
+        previous = self._last_pages
+        for page, buf in enumerate(pages):
+            if not force and previous is not None and previous[page] == buf:
+                continue
+            self.cmd(0xB0 + page)
+            self.cmd(0x00)
+            self.cmd(0x10)
             self.data(buf)
+        self._last_pages = pages
+
+    def _fit(self, text, max_px=128):
+        text = str(text)
+        if self.draw(self.image()).textlength(text, font=self.font) <= max_px:
+            return text
+        ellipsis = "…"
+        while text and self.draw(self.image()).textlength(text + ellipsis, font=self.font) > max_px:
+            text = text[:-1]
+        return text + ellipsis if text else ""
 
     def text_screen(self, lines, shift=(0, 0)):
         img = self.image()
         d = self.draw(img)
         x0, y0 = shift
-        # 128x32 OLED + default PIL font is tight. Use 10px row spacing
-        # so the third row does not clip at the bottom edge.
         for y, line in zip((0 + y0, 10 + y0, 20 + y0), lines[:3]):
-            d.text((x0, y), line, font=self.font, fill=255)
+            d.text((x0, y), self._fit(line, self.width - max(0, x0)), font=self.font, fill=255)
         self.show(img)
 
     def popup(self, title, line2="", line3=""):
         img = self.image()
         d = self.draw(img)
         d.rectangle((0, 0, self.width - 1, self.height - 1), outline=255)
-        d.text((8, 2), title[:18], font=self.font, fill=255)
+        d.text((8, 2), self._fit(title, 108), font=self.font, fill=255)
         if line2:
-            d.text((8, 13), line2[:18], font=self.font, fill=255)
+            d.text((8, 13), self._fit(line2, 108), font=self.font, fill=255)
         if line3:
-            d.text((8, 22), line3[:18], font=self.font, fill=255)
+            d.text((8, 22), self._fit(line3, 108), font=self.font, fill=255)
         self.show(img)
 
     def loading(self, pct):
