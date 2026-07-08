@@ -68,21 +68,21 @@ class OLED:
         img = self.image()
         d = self.draw(img)
         x0, y0 = shift
-        y = y0
-        for line in lines[:3]:
+        # 128x32 OLED + default PIL font is tight. Use 10px row spacing
+        # so the third row does not clip at the bottom edge.
+        for y, line in zip((0 + y0, 10 + y0, 20 + y0), lines[:3]):
             d.text((x0, y), line, font=self.font, fill=255)
-            y += 11
         self.show(img)
 
     def popup(self, title, line2="", line3=""):
         img = self.image()
         d = self.draw(img)
         d.rectangle((0, 0, self.width - 1, self.height - 1), outline=255)
-        d.text((8, 3), title[:18], font=self.font, fill=255)
+        d.text((8, 2), title[:18], font=self.font, fill=255)
         if line2:
-            d.text((8, 14), line2[:18], font=self.font, fill=255)
+            d.text((8, 13), line2[:18], font=self.font, fill=255)
         if line3:
-            d.text((8, 23), line3[:18], font=self.font, fill=255)
+            d.text((8, 22), line3[:18], font=self.font, fill=255)
         self.show(img)
 
     def loading(self, pct):
