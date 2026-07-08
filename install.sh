@@ -30,9 +30,6 @@ fi
 
 install -m 0644 netwatchdog.service /etc/systemd/system/netwatchdog.service
 install -m 0644 netwatchdog-dashboard.service /etc/systemd/system/netwatchdog-dashboard.service
-if [ -f service/netwatchdog-status.service ]; then
-  install -m 0644 service/netwatchdog-status.service /etc/systemd/system/netwatchdog-status.service
-fi
 if [ -f service/netwatchdog-oled.service ]; then
   install -m 0644 service/netwatchdog-oled.service /etc/systemd/system/netwatchdog-oled.service
 fi
@@ -41,10 +38,6 @@ systemctl daemon-reload
 systemctl enable netwatchdog netwatchdog-dashboard
 systemctl restart netwatchdog
 systemctl restart netwatchdog-dashboard
-if systemctl list-unit-files netwatchdog-status.service >/dev/null 2>&1; then
-  systemctl enable netwatchdog-status || true
-  systemctl restart netwatchdog-status || true
-fi
 
 systemctl status netwatchdog --no-pager -l || true
 systemctl status netwatchdog-dashboard --no-pager -l || true
