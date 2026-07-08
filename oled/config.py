@@ -1,25 +1,33 @@
 """NetWatchDog OLED configuration."""
 
+try:
+    from core_config import get, get_int, load_config
+except Exception:
+    get = get_int = load_config = None
+
+_cfg = load_config() if load_config else {}
+
 I2C_BUS = 4
 I2C_ADDR = 0x3C
 WIDTH = 128
 HEIGHT = 32
 
-PRIMARY_IFACE = "wlx6c4cbcdb7033"
-BACKUP_IFACE = "wlan0"
-GATEWAY_HOST = "192.168.1.1"
-INTERNET_HOST = "1.1.1.1"
+PRIMARY_IFACE = get(_cfg, "primary.interface", "wlx6c4cbcdb7033") if get else "wlx6c4cbcdb7033"
+BACKUP_IFACE = get(_cfg, "backup.interface", "wlan0") if get else "wlan0"
+GATEWAY_HOST = get(_cfg, "gateway.host", "192.168.1.1") if get else "192.168.1.1"
+INTERNET_HOST = get(_cfg, "internet.host", "1.1.1.1") if get else "1.1.1.1"
 
 STATUS_PATHS = [
-    "/run/netwatchdog/status.json",
-    "/opt/netwatchdog-run/status.json",
+    get(_cfg, "status.path", "/run/netwatchdog/status.json") if get else "/run/netwatchdog/status.json",
 ]
 
 PAGE_INTERVAL_SEC = 3
-POPUP_SEC = 5
+POPUP_SEC = get_int(_cfg, "oled.popup_timeout_sec", 5) if get_int else 5
 BURN_SHIFT_SEC = 60
+SCREEN_SAVER_SEC = get_int(_cfg, "oled.screen_saver_sec", 300) if get_int else 300
+SCREEN_SAVER_BLANK_SEC = 2
 
-DAY_CONTRAST = 200
-NIGHT_CONTRAST = 70
+DAY_CONTRAST = get_int(_cfg, "oled.day_brightness", 160) if get_int else 160
+NIGHT_CONTRAST = get_int(_cfg, "oled.night_brightness", 32) if get_int else 32
 DAY_START_HOUR = 7
 NIGHT_START_HOUR = 22
