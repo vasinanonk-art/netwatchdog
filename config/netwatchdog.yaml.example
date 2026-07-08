@@ -1,0 +1,21 @@
+primary:
+  interface: wlx6c4cbcdb7033
+
+backup:
+  interface: wlan0
+
+gateway:
+  host: 192.168.1.1
+
+internet:
+  host: 1.1.1.1
+
+status:
+  path: /run/netwatchdog/status.json
+  interval: 2
+
+event:
+  log: /var/log/netwatchdog/events.log
+
+oled:
+  enabled: true
