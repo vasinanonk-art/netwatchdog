@@ -6,26 +6,34 @@ def score(gateway_ok, internet_ok, cpu, ram, temp, rssi=None, retry=0):
     reasons = []
 
     if not gateway_ok:
-        value -= 30
-        reasons.append("GW")
+        value -= 25
+        reasons.append("Gateway lost")
     if not internet_ok:
-        value -= 35
-        reasons.append("NET")
-    if cpu >= 90:
+        value -= 25
+        reasons.append("Internet unstable")
+    if cpu is not None and cpu >= 85:
+        value -= 15
+        reasons.append("CPU high")
+    if ram is not None and ram >= 85:
+        value -= 15
+        reasons.append("RAM high")
+    if temp is not None and temp >= 75:
+        value -= 15
+        reasons.append("CPU temp high")
+    if rssi is not None and rssi < -70:
         value -= 10
-        reasons.append("CPU")
-    if ram >= 90:
-        value -= 10
-        reasons.append("RAM")
-    if temp >= 75:
-        value -= 10
-        reasons.append("TEMP")
-    if rssi is not None and rssi < -75:
-        value -= 5
-        reasons.append("RSSI")
+        reasons.append("RSSI poor")
     if retry:
         value -= min(10, retry * 2)
-        reasons.append("RETRY")
+        reasons.append("Retry active")
 
     value = max(0, min(100, value))
-    return value, reasons
+    return value, reasons or ["Normal"]
+
+
+def status(value):
+    if value >= 85:
+        return "OK"
+    if value >= 70:
+        return "DEGRADED"
+    return "CRITICAL"
