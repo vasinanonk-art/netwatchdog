@@ -1,0 +1,16 @@
+[Unit]
+Description=NetWatchDog Dashboard v2
+After=network-online.target netwatchdog.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/netwatchdog
+ExecStart=/usr/bin/python3 /opt/netwatchdog/dashboard.py
+Restart=always
+RestartSec=10
+MemoryMax=128M
+
+[Install]
+WantedBy=multi-user.target
