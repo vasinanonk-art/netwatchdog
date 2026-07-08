@@ -6,7 +6,7 @@ CFG_DIR=/etc/netwatchdog
 SRC_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 if [ "$(id -u)" -ne 0 ]; then
-  echo "Run as root: sudo bash install.sh" >&2
+  echo "Run as root: sudo sh install.sh" >&2
   exit 1
 fi
 
@@ -50,6 +50,8 @@ if [ -f "$SRC_DIR/service/netwatchdog-oled.service" ]; then
   copy_file service/netwatchdog-oled.service /etc/systemd/system/netwatchdog-oled.service 0644
 fi
 
+systemctl disable --now netwatchdog-web.service 2>/dev/null || true
+systemctl disable --now netwatchdog-status.service 2>/dev/null || true
 systemctl daemon-reload
 systemctl enable netwatchdog netwatchdog-dashboard
 systemctl restart netwatchdog
