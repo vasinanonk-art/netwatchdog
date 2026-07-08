@@ -1,5 +1,5 @@
 [Unit]
-Description=NetWatchdog v5 - Self Healing WiFi and Service Watchdog
+Description=NetWatchDog v5.1 - Self Healing WiFi and Service Watchdog
 After=network-online.target usb-wifi-wpa.service zerotier-one.service mosquitto.service
 Wants=network-online.target
 
@@ -10,6 +10,7 @@ WorkingDirectory=/opt/netwatchdog
 ExecStart=/usr/bin/python3 /opt/netwatchdog/netwatchdog.py
 Restart=always
 RestartSec=10
+MemoryMax=128M
 
 [Install]
 WantedBy=multi-user.target
