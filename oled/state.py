@@ -1,7 +1,4 @@
-"""Small runtime state tracker for OLED front panel.
-
-No persistence yet. Keeps counters and recent events only inside the OLED service.
-"""
+"""Small runtime state tracker for OLED front panel."""
 
 import time
 
@@ -16,6 +13,10 @@ class RuntimeState:
         self.last_event_at = self.started_at
         self.last_link = None
         self.last_internet_ok = None
+        self.status = None
+
+    def update_status(self, status):
+        self.status = status
 
     def mark_link(self, link):
         now = time.time()
