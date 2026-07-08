@@ -40,6 +40,17 @@ def status_signature(status):
         status.get("iface"),
         status.get("gateway"),
         status.get("internet"),
+        status.get("gateway_ping"),
+        status.get("internet_ping"),
+        status.get("last_ping"),
+        status.get("retry"),
+        status.get("failover"),
+        status.get("restore"),
+        status.get("ip"),
+        status.get("rssi"),
+        status.get("cpu"),
+        status.get("ram"),
+        status.get("temp"),
         health.get("score"),
         health.get("status"),
         status.get("last_event"),
@@ -57,6 +68,8 @@ def main():
     shift_tick = 0
     last_shift = time.time()
     last_activity = time.time()
+    last_page = time.time()
+    last_render_key = None
     was_blank = False
 
     status = status_source.read_status()
@@ -70,7 +83,8 @@ def main():
 
         status = status_source.read_status()
         signature = status_signature(status)
-        if signature != last_signature:
+        status_changed = signature != last_signature
+        if status_changed:
             last_signature = signature
             last_activity = time.time()
         runtime.update_status(status)
@@ -83,9 +97,11 @@ def main():
 
         if popup.show_link_event(display, link_event):
             last_activity = time.time()
+            last_render_key = None
             time.sleep(config.POPUP_SEC)
         elif popup.show_internet_event(display, net_event):
             last_activity = time.time()
+            last_render_key = None
             time.sleep(config.POPUP_SEC)
 
         now = time.time()
@@ -93,22 +109,39 @@ def main():
             if not was_blank:
                 display.power(False)
                 was_blank = True
+                last_render_key = None
             time.sleep(1)
             continue
 
+        woke_from_blank = False
         if was_blank:
             display.power(True)
             was_blank = False
+            woke_from_blank = True
 
+        shift_changed = False
         if now - last_shift >= config.BURN_SHIFT_SEC:
             shift_tick += 1
             last_shift = now
+            shift_changed = True
 
-        screen_func = dashboard.SCREENS[screen_index % len(dashboard.SCREENS)]
-        display.text_screen(screen_func(runtime), shift=screensaver.shift_for_tick(shift_tick, config.PIXEL_SHIFT))
+        page_changed = False
+        if now - last_page >= config.PAGE_INTERVAL_SEC:
+            screen_index += 1
+            last_page = now
+            page_changed = True
 
-        screen_index += 1
-        time.sleep(config.PAGE_INTERVAL_SEC)
+        shift = screensaver.shift_for_tick(shift_tick, config.PIXEL_SHIFT)
+        page = screen_index % len(dashboard.SCREENS)
+        render_key = (page, shift, signature)
+        if not (status_changed or page_changed or shift_changed or woke_from_blank or render_key != last_render_key):
+            time.sleep(1)
+            continue
+
+        screen_func = dashboard.SCREENS[page]
+        display.text_screen(screen_func(runtime), shift=shift)
+        last_render_key = render_key
+        time.sleep(1)
 
 
 if __name__ == "__main__":
