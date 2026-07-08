@@ -1,6 +1,7 @@
 """Network status helpers for OLED dashboard."""
 
 import os
+import re
 import subprocess
 
 from . import config
@@ -45,6 +46,15 @@ def active_link():
     return "LINK FAIL"
 
 
+def active_iface():
+    link = active_link()
+    if link == "PRIMARY":
+        return config.PRIMARY_IFACE
+    if link == "BACKUP":
+        return config.BACKUP_IFACE
+    return None
+
+
 def gateway_ok():
     return ping_ok(config.GATEWAY_HOST)
 
@@ -56,3 +66,36 @@ def internet_ok():
 def gateway_ping_line():
     ms = ping_ms(config.GATEWAY_HOST)
     return "GW --" if ms is None else f"GW {ms}ms"
+
+
+def ip_addr(iface=None):
+    iface = iface or active_iface()
+    if not iface:
+        return "IP --"
+    try:
+        out = subprocess.check_output(["ip", "-4", "addr", "show", iface], text=True)
+        match = re.search(r"inet (\d+\.\d+\.\d+\.\d+)", out)
+        if match:
+            return match.group(1)
+    except Exception:
+        pass
+    return "IP --"
+
+
+def wifi_rssi(iface=None):
+    iface = iface or active_iface()
+    if not iface:
+        return None
+    try:
+        out = subprocess.check_output(["iw", "dev", iface, "link"], stderr=subprocess.DEVNULL, text=True)
+        match = re.search(r"signal:\s*(-?\d+)", out)
+        if match:
+            return int(match.group(1))
+    except Exception:
+        pass
+    return None
+
+
+def wifi_rssi_line():
+    rssi = wifi_rssi()
+    return "RSSI --" if rssi is None else f"RSSI {rssi}dBm"
