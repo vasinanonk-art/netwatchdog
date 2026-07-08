@@ -10,6 +10,11 @@ BACKUP_IFACE = "wlan0"
 GATEWAY_HOST = "192.168.1.1"
 INTERNET_HOST = "1.1.1.1"
 
+STATUS_PATHS = [
+    "/run/netwatchdog/status.json",
+    "/opt/netwatchdog-run/status.json",
+]
+
 PAGE_INTERVAL_SEC = 3
 POPUP_SEC = 5
 BURN_SHIFT_SEC = 60
