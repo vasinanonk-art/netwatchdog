@@ -1,0 +1,10 @@
+/var/log/netwatchdog/events.jsonl {
+    weekly
+    rotate 8
+    compress
+    delaycompress
+    missingok
+    notifempty
+    copytruncate
+    create 0644 root root
+}
