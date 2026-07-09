@@ -16,6 +16,8 @@ EVENT_LOG_PATH = LOG_DIR / "events.jsonl"
 BACKUP_DIR = DATA_DIR / "backups"
 HISTORY_INTERVAL_SEC = 10
 HISTORY_RETENTION_SEC = 86400
+HISTORY_MAX_SAMPLES = HISTORY_RETENTION_SEC // HISTORY_INTERVAL_SEC
+EVENT_DEDUP_WINDOW_SEC = 60
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "network": {"usb_if": "wlx6c4cbcdb7033", "usb_ip": "192.168.1.61", "onboard_if": "wlan0", "onboard_ip": "192.168.1.60", "gateway": "192.168.1.1", "internet_target": "1.1.1.1", "usb_metric": 100, "onboard_metric": 600, "wifi_fail_limit": 3, "wifi_recover_limit": 3, "heal_cooldown": 300},
@@ -100,7 +102,16 @@ def atomic_write_json(path: Path, payload: Any) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(payload, f, ensure_ascii=False, separators=(",", ":")); f.write("\n")
+            f.flush(); os.fsync(f.fileno())
         os.replace(tmp, path)
+        try:
+            dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
@@ -111,10 +122,31 @@ def read_json(path: Path, default: Any) -> Any:
     except (OSError, json.JSONDecodeError):
         return default
 
+def _recent_duplicate_event(event: str, detail: str, level: str, now: int) -> bool:
+    try:
+        lines = EVENT_LOG_PATH.read_text(encoding="utf-8").splitlines()[-20:]
+    except OSError:
+        return False
+    for line in reversed(lines):
+        try:
+            item = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if now - int(item.get("ts", 0)) > EVENT_DEDUP_WINDOW_SEC:
+            return False
+        if item.get("event") == event and item.get("detail", "") == detail and item.get("level", "info") == level:
+            return True
+    return False
+
 def append_event(event: str, detail: str = "", level: str = "info") -> None:
     ensure_dirs()
+    now = int(time.time())
+    if _recent_duplicate_event(event, detail, level, now):
+        return
+    payload = json.dumps({"ts": now, "event": event, "detail": detail, "level": level}, ensure_ascii=False, separators=(",", ":"))
     with EVENT_LOG_PATH.open("a", encoding="utf-8") as f:
-        f.write(json.dumps({"ts": int(time.time()), "event": event, "detail": detail, "level": level}, ensure_ascii=False, separators=(",", ":")) + "\n")
+        f.write(payload + "\n")
+        f.flush(); os.fsync(f.fileno())
 
 def read_events(limit: int = 50) -> list[dict[str, Any]]:
     try:
@@ -136,7 +168,7 @@ def update_history(sample: dict[str, Any]) -> list[dict[str, Any]]:
     hist = hist if isinstance(hist, list) else []
     hist.append(sample)
     hist = [x for x in hist if int(x.get("ts", 0)) >= now - HISTORY_RETENTION_SEC]
-    hist = hist[-(HISTORY_RETENTION_SEC // HISTORY_INTERVAL_SEC + 6):]
+    hist = hist[-HISTORY_MAX_SAMPLES:]
     atomic_write_json(HISTORY_PATH, hist)
     return hist
 
@@ -186,11 +218,11 @@ def git_commit(repo_dir: str = "/opt/netwatchdog") -> str:
 
 def health_score(cpu: float | None, ram: float | None, temp: float | None, rssi: int | None, gw: float | None, net: float | None) -> dict[str, Any]:
     score, reasons = 100, []
-    if net is None: score -= 25; reasons.append("Internet unstable")
-    if gw is None: score -= 25; reasons.append("Gateway lost")
-    if cpu is not None and cpu >= 85: score -= 15; reasons.append("CPU high")
-    if ram is not None and ram >= 85: score -= 15; reasons.append("RAM high")
-    if temp is not None and temp >= 75: score -= 15; reasons.append("CPU temp high")
-    if rssi is not None and rssi < -70: score -= 10; reasons.append("RSSI poor")
+    if net is None: score -= 25; reasons.append("Internet check failed")
+    if gw is None: score -= 25; reasons.append("Gateway check failed")
+    if cpu is not None and cpu >= 85: score -= 15; reasons.append(f"CPU usage high: {cpu}%")
+    if ram is not None and ram >= 85: score -= 15; reasons.append(f"Memory usage high: {ram}%")
+    if temp is not None and temp >= 75: score -= 15; reasons.append(f"CPU temperature high: {temp}C")
+    if rssi is not None and rssi < -70: score -= 10; reasons.append(f"Wi-Fi signal weak: {rssi}dBm")
     score = max(0, min(100, score))
-    return {"score": score, "status": "OK" if score >= 85 else "DEGRADED" if score >= 70 else "CRITICAL", "reasons": reasons or ["Normal"]}
+    return {"score": score, "status": "OK" if score >= 85 else "DEGRADED" if score >= 70 else "CRITICAL", "reasons": reasons or ["All checks normal"]}
