@@ -32,6 +32,7 @@ class WatchState:
     gateway_was_down: bool = False; internet_was_down: bool = False
     gateway_fail: int = 0; gateway_recover: int = 0
     internet_fail: int = 0; internet_recover: int = 0
+    last_wifi_log: Any = None
 
 
 def build_config() -> Config:
@@ -166,8 +167,16 @@ def init_route_state() -> None:
     append_event("Gateway Lost", "No healthy Wi-Fi during boot", "error"); log.error("START_ROUTE no healthy Wi-Fi; route unchanged")
 
 
+def log_wifi_state_if_changed(usb: WifiHealth, onboard: WifiHealth) -> None:
+    signature = (STATE.active, usb.good, onboard.good, usb.score, onboard.score)
+    if signature == STATE.last_wifi_log:
+        return
+    STATE.last_wifi_log = signature
+    log.info("WIFI state=%s usb_good=%s usb_score=%s usb_sig=%s onboard_good=%s onboard_score=%s onboard_sig=%s", STATE.active, usb.good, usb.score, usb.signal_dbm, onboard.good, onboard.score, onboard.signal_dbm)
+
+
 def wifi_state_machine(usb: WifiHealth, onboard: WifiHealth) -> None:
-    log.info("WIFI state=%s usb_good=%s usb_score=%s usb_sig=%s usb_gw=%s onboard_good=%s onboard_score=%s onboard_sig=%s onboard_gw=%s", STATE.active, usb.good, usb.score, usb.signal_dbm, usb.gateway_ms, onboard.good, onboard.score, onboard.signal_dbm, onboard.gateway_ms)
+    log_wifi_state_if_changed(usb, onboard)
     if STATE.active == "USB_PRIMARY":
         if usb.good:
             STATE.usb_fail = 0
@@ -237,7 +246,7 @@ def write_status(usb: WifiHealth, onboard: WifiHealth, services: dict[str, str],
 
 
 def cycle() -> None:
-    usb = usb_health(); onboard = onboard_health(); wifi_state_machine(usb, onboard); services = service_watch(); ports = port_watch(); zerotier_watch(); write_status(usb, onboard, services, ports); log.info("ACTIVE_ROUTE %s", active_route())
+    usb = usb_health(); onboard = onboard_health(); wifi_state_machine(usb, onboard); services = service_watch(); ports = port_watch(); zerotier_watch(); write_status(usb, onboard, services, ports)
 
 
 def main() -> None:
