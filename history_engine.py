@@ -6,6 +6,7 @@ from pathlib import Path
 
 RETENTION_SEC = 24 * 60 * 60
 INTERVAL_SEC = 10
+MAX_SAMPLES = RETENTION_SEC // INTERVAL_SEC
 
 
 def read(path):
@@ -23,6 +24,7 @@ def write_atomic(path, data):
     try:
         with os.fdopen(fd, "w") as f:
             json.dump(data, f, separators=(",", ":")); f.write("\n")
+            f.flush(); os.fsync(f.fileno())
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp): os.unlink(tmp)
@@ -33,6 +35,6 @@ def append(path, sample, now=None):
     sample = dict(sample); sample["ts"] = int(sample.get("ts", now))
     data = read(path); data.append(sample)
     data = [x for x in data if int(x.get("ts", 0)) >= now - RETENTION_SEC]
-    data = data[-(RETENTION_SEC // INTERVAL_SEC + 6):]
+    data = data[-MAX_SAMPLES:]
     write_atomic(path, data)
     return data
