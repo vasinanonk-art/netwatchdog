@@ -1,12 +1,23 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import argparse, json, sys, tarfile, time
+import argparse, json, os, shutil, sys, tarfile, tempfile, time
 from pathlib import Path
 from netwatchdog_common import BACKUP_DIR, CONFIG_PATH, EVENT_LOG_PATH, HISTORY_PATH, STATUS_PATH, append_event, cpu_temp_c, disk_percent, ensure_dirs, load_config, memory_percent, read_json, run_cmd
 
+ALLOWED_MEMBERS = {
+    "etc/netwatchdog/config.yaml": CONFIG_PATH,
+    "var/log/netwatchdog/events.jsonl": EVENT_LOG_PATH,
+    "var/lib/netwatchdog/history.json": HISTORY_PATH,
+    "run/netwatchdog/status.json": STATUS_PATH,
+}
+JSON_MEMBERS = {"var/lib/netwatchdog/history.json", "run/netwatchdog/status.json"}
+JSONL_MEMBERS = {"var/log/netwatchdog/events.jsonl"}
+
+
 def out(payload: object) -> int:
     print(json.dumps(payload, ensure_ascii=False, indent=2)); return 0
+
 
 def restart(service: str) -> int:
     allowed = set(load_config()["watchdog"].get("control_services", []))
@@ -14,37 +25,176 @@ def restart(service: str) -> int:
     code, text = run_cmd(["systemctl", "restart", service], 20); append_event("Service Restarted", service, "warning" if code else "info")
     return out({"ok": code == 0, "service": service, "output": text})
 
+
+def _validate_json_bytes(name: str, data: bytes) -> tuple[bool, str]:
+    try:
+        if name in JSON_MEMBERS:
+            json.loads(data.decode("utf-8"))
+        elif name in JSONL_MEMBERS:
+            for i, line in enumerate(data.decode("utf-8").splitlines(), 1):
+                if line.strip():
+                    json.loads(line)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return False, f"invalid JSON in {name}: {exc}"
+    return True, ""
+
+
+def verify_archive(path: Path) -> tuple[bool, str]:
+    if not path.is_file():
+        return False, "backup not found"
+    try:
+        seen: set[str] = set()
+        with tarfile.open(path, "r:gz") as tar:
+            members = tar.getmembers()
+            if not members:
+                return False, "backup is empty"
+            for member in members:
+                if member.name not in ALLOWED_MEMBERS:
+                    return False, f"unsafe member: {member.name}"
+                if member.name in seen:
+                    return False, f"duplicate member: {member.name}"
+                if not member.isfile():
+                    return False, f"unsupported member type: {member.name}"
+                seen.add(member.name)
+                extracted = tar.extractfile(member)
+                if extracted is None:
+                    return False, f"cannot read member: {member.name}"
+                data = extracted.read()
+                ok, err = _validate_json_bytes(member.name, data)
+                if not ok:
+                    return False, err
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        return False, f"corrupt backup: {exc}"
+    return True, ""
+
+
+def _create_backup_archive(target: Path) -> tuple[bool, str]:
+    ensure_dirs(); target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=str(target.parent))
+    os.close(fd)
+    tmp = Path(tmp_name)
+    try:
+        with tarfile.open(tmp, "w:gz") as tar:
+            for p in (CONFIG_PATH, EVENT_LOG_PATH, HISTORY_PATH, STATUS_PATH):
+                if p.exists():
+                    tar.add(p, arcname=str(p).lstrip("/"))
+        ok, err = verify_archive(tmp)
+        if not ok:
+            return False, err
+        os.replace(tmp, target)
+        return True, ""
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+
+
 def backup() -> int:
-    ensure_dirs(); target = BACKUP_DIR / f"netwatchdog-backup-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz"
-    with tarfile.open(target, "w:gz") as tar:
-        for p in (CONFIG_PATH, EVENT_LOG_PATH, HISTORY_PATH, STATUS_PATH):
-            if p.exists(): tar.add(p, arcname=str(p).lstrip("/"))
-    append_event("Backup Created", str(target)); return out({"ok": True, "backup": str(target)})
+    target = BACKUP_DIR / f"netwatchdog-backup-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz"
+    ok, err = _create_backup_archive(target)
+    if not ok:
+        append_event("Backup Failed", err, "error")
+        return out({"ok": False, "error": err})
+    append_event("Backup Created", str(target)); return out({"ok": True, "backup": str(target), "verified": True})
+
+
+def _atomic_write(path: Path, data: bytes) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(data); f.flush(); os.fsync(f.fileno())
+        os.replace(tmp_name, path)
+        try:
+            dir_fd = os.open(str(path.parent), os.O_DIRECTORY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
+    finally:
+        if os.path.exists(tmp_name):
+            os.unlink(tmp_name)
+
+
+def _read_archive_payload(path: Path) -> tuple[dict[Path, bytes] | None, str]:
+    ok, err = verify_archive(path)
+    if not ok:
+        return None, err
+    payload: dict[Path, bytes] = {}
+    with tarfile.open(path, "r:gz") as tar:
+        for member in tar.getmembers():
+            extracted = tar.extractfile(member)
+            if extracted is None:
+                return None, f"cannot read member: {member.name}"
+            payload[ALLOWED_MEMBERS[member.name]] = extracted.read()
+    return payload, ""
+
+
+def _verify_files_after_restore(payload: dict[Path, bytes]) -> tuple[bool, str]:
+    for path, expected in payload.items():
+        try:
+            actual = path.read_bytes()
+        except OSError as exc:
+            return False, f"restore verification failed for {path}: {exc}"
+        if actual != expected:
+            return False, f"restore verification mismatch: {path}"
+    return True, ""
+
+
+def _restore_payload(payload: dict[Path, bytes]) -> tuple[bool, str]:
+    try:
+        for path, data in payload.items():
+            _atomic_write(path, data)
+    except OSError as exc:
+        return False, f"atomic restore failed: {exc}"
+    return _verify_files_after_restore(payload)
+
 
 def restore(archive: str) -> int:
     path = Path(archive)
-    if not path.is_file(): return out({"ok": False, "error": "backup not found"})
-    allowed = {"etc/netwatchdog/config.yaml", "var/log/netwatchdog/events.jsonl", "var/lib/netwatchdog/history.json", "run/netwatchdog/status.json"}
-    with tarfile.open(path, "r:gz") as tar:
-        for m in tar.getmembers():
-            if m.name not in allowed: return out({"ok": False, "error": f"unsafe member: {m.name}"})
-        tar.extractall("/")
-    append_event("Backup Restored", archive, "warning"); return out({"ok": True, "restored": archive})
+    payload, err = _read_archive_payload(path)
+    if payload is None:
+        append_event("Restore Aborted", err, "error")
+        return out({"ok": False, "error": err})
+
+    rollback_archive = BACKUP_DIR / f"pre-restore-{time.strftime('%Y%m%d-%H%M%S')}.tar.gz"
+    ok, err = _create_backup_archive(rollback_archive)
+    if not ok:
+        append_event("Restore Aborted", f"rollback backup failed: {err}", "error")
+        return out({"ok": False, "error": f"rollback backup failed: {err}"})
+
+    ok, err = _restore_payload(payload)
+    if not ok:
+        rollback_payload, rollback_err = _read_archive_payload(rollback_archive)
+        if rollback_payload is not None:
+            rb_ok, rb_err = _restore_payload(rollback_payload)
+            detail = "rollback applied" if rb_ok else f"rollback failed: {rb_err}"
+        else:
+            detail = f"rollback unavailable: {rollback_err}"
+        append_event("Restore Failed", f"{err}; {detail}", "error")
+        return out({"ok": False, "error": err, "rollback": detail, "rollback_backup": str(rollback_archive)})
+
+    append_event("Backup Restored", archive, "warning"); return out({"ok": True, "restored": archive, "verified": True, "rollback_backup": str(rollback_archive)})
+
 
 def update_info() -> int:
     fc, fo = run_cmd(["git", "fetch", "--all", "--prune"], 60); cc, cur = run_cmd(["git", "rev-parse", "--short", "HEAD"], 5); lc, lat = run_cmd(["git", "rev-parse", "--short", "@{u}"], 5)
     return out({"ok": fc == 0 and cc == 0, "current": cur, "latest": lat if lc == 0 else "unknown", "fetch": fo})
+
 
 def pull() -> int:
     _, before = run_cmd(["git", "rev-parse", "--short", "HEAD"], 5); code, text = run_cmd(["git", "pull", "--ff-only"], 120); _, after = run_cmd(["git", "rev-parse", "--short", "HEAD"], 5)
     if code == 0: append_event("Updated", f"{before} -> {after}")
     return out({"ok": code == 0, "before": before, "after": after, "output": text})
 
+
 def rollback(commit: str) -> int:
     if not commit or any(c not in "0123456789abcdefABCDEF" for c in commit): return out({"ok": False, "error": "commit must be hex"})
     code, text = run_cmd(["git", "reset", "--hard", commit], 60)
     if code == 0: append_event("Rollback", commit, "warning")
     return out({"ok": code == 0, "commit": commit, "output": text})
+
 
 def selftest() -> int:
     cfg = load_config(); net = cfg["network"]; services = cfg["watchdog"].get("watched_services", [])
@@ -63,6 +213,7 @@ def selftest() -> int:
     checks["systemd_services"] = all(svc.values()) if svc else None
     ok = all(v is True or v is None for v in checks.values()); append_event("Self Test", "PASS" if ok else "FAIL", "info" if ok else "warning")
     return out({"ok": ok, "checks": checks, "services": svc, "status": read_json(STATUS_PATH, {})})
+
 
 def main() -> int:
     p = argparse.ArgumentParser(prog="netwatchdogctl"); sub = p.add_subparsers(dest="cmd", required=True)
