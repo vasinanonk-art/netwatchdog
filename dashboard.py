@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import json
+import json, sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -21,17 +21,42 @@ async function draw(){let s=await api('/api/status'),h=await api('/api/history')
 async function act(service){document.getElementById('out').textContent='Running...';document.getElementById('out').textContent=JSON.stringify(await api('/api/restart?service='+encodeURIComponent(service),{method:'POST'}),null,2)}draw();setInterval(draw,5000);
 </script></body></html>'''
 
+CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)
+
+class QuietThreadingHTTPServer(ThreadingHTTPServer):
+    def handle_error(self, request, client_address) -> None:
+        exc = sys.exc_info()[1]
+        if isinstance(exc, CLIENT_DISCONNECT_ERRORS):
+            return
+        super().handle_error(request, client_address)
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args: object) -> None: return
+    def _write_bytes(self, data: bytes) -> bool:
+        try:
+            self.wfile.write(data)
+            return True
+        except CLIENT_DISCONNECT_ERRORS:
+            return False
     def send_json(self, payload: object, code: int = 200) -> None:
-        data = json.dumps(payload, ensure_ascii=False).encode(); self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data)
+        data = json.dumps(payload, ensure_ascii=False).encode()
+        try:
+            self.send_response(code); self.send_header("Content-Type", "application/json; charset=utf-8"); self.send_header("Cache-Control", "no-store"); self.send_header("Content-Length", str(len(data))); self.end_headers()
+        except CLIENT_DISCONNECT_ERRORS:
+            return
+        self._write_bytes(data)
     def do_GET(self) -> None:
         p = urlparse(self.path).path
         if p == "/api/status": self.send_json(read_json(STATUS_PATH, {"version": VERSION, "health": {"score": 0, "status": "CRITICAL", "reasons": ["Status not ready"]}})); return
         if p == "/api/history": self.send_json(read_json(HISTORY_PATH, [])); return
         if p == "/api/events": self.send_json(read_events(50)); return
         if p in {"/", "/advanced", "/history", "/service"}:
-            data = HTML.encode(); self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(data))); self.end_headers(); self.wfile.write(data); return
+            data = HTML.encode()
+            try:
+                self.send_response(200); self.send_header("Content-Type", "text/html; charset=utf-8"); self.send_header("Content-Length", str(len(data))); self.end_headers()
+            except CLIENT_DISCONNECT_ERRORS:
+                return
+            self._write_bytes(data); return
         self.send_json({"error": "not found"}, 404)
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
@@ -41,5 +66,5 @@ class Handler(BaseHTTPRequestHandler):
         code, out = run_cmd(["systemctl", "restart", service], 20); self.send_json({"ok": code == 0, "service": service, "output": out})
 
 def main() -> None:
-    cfg = load_config()["dashboard"]; ThreadingHTTPServer((str(cfg["host"]), int(cfg["port"])), Handler).serve_forever()
+    cfg = load_config()["dashboard"]; QuietThreadingHTTPServer((str(cfg["host"]), int(cfg["port"])), Handler).serve_forever()
 if __name__ == "__main__": main()
