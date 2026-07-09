@@ -10,6 +10,14 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
+real_path() {
+  if [ -e "$1" ]; then
+    readlink -f "$1"
+  else
+    printf '%s\n' "$1"
+  fi
+}
+
 copy_file() {
   src="$SRC_DIR/$1"
   dst="$2"
@@ -18,7 +26,9 @@ copy_file() {
     echo "missing source: $src" >&2
     exit 1
   fi
-  if [ "$(readlink -f "$src")" = "$(readlink -f "$dst" 2>/dev/null || true)" ]; then
+  src_real=$(real_path "$src")
+  dst_real=$(real_path "$dst")
+  if [ "$src_real" = "$dst_real" ]; then
     chmod "$mode" "$dst"
     return
   fi
@@ -26,9 +36,9 @@ copy_file() {
 }
 
 apt-get update
-apt-get install -y --no-install-recommends python3 git iproute2 iputils-ping wireless-tools iw ca-certificates
+apt-get install -y --no-install-recommends python3 git iproute2 iputils-ping wireless-tools iw ca-certificates logrotate
 
-install -d "$APP_DIR" "$CFG_DIR" /run/netwatchdog /var/lib/netwatchdog/backups /var/log/netwatchdog
+install -d "$APP_DIR" "$CFG_DIR" /run/netwatchdog /var/lib/netwatchdog/backups /var/log/netwatchdog /etc/logrotate.d
 copy_file netwatchdog.py "$APP_DIR/netwatchdog.py" 0755
 copy_file status_writer.py "$APP_DIR/status_writer.py" 0755
 copy_file core_config.py "$APP_DIR/core_config.py" 0644
@@ -42,6 +52,10 @@ ln -sf "$APP_DIR/netwatchdogctl.py" /usr/local/bin/netwatchdogctl
 
 if [ ! -f "$CFG_DIR/config.yaml" ]; then
   install -m 0644 "$SRC_DIR/config/netwatchdog.yaml.example" "$CFG_DIR/config.yaml"
+fi
+
+if [ -f "$SRC_DIR/logrotate/netwatchdog" ]; then
+  copy_file logrotate/netwatchdog /etc/logrotate.d/netwatchdog 0644
 fi
 
 copy_file netwatchdog.service /etc/systemd/system/netwatchdog.service 0644
