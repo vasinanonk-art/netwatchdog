@@ -1,4 +1,4 @@
-# NetWatchDog v5.1 Stable
+# NetWatchDog v5.1.1 LTS
 
 Self-healing Wi-Fi, service watchdog, status writer, dashboard, history, backup, update and self-test tools for a TinkerBoard running 24/7.
 
@@ -7,8 +7,8 @@ Self-healing Wi-Fi, service watchdog, status writer, dashboard, history, backup,
 - Stability > features.
 - Single source of truth: `/run/netwatchdog/status.json`.
 - Low CPU/RAM: pure Python stdlib, no React, no SQLite, no new runtime framework.
-- History uses a 24-hour ring buffer in `/var/lib/netwatchdog/history.json`.
-- Events are human readable JSONL in `/var/log/netwatchdog/events.jsonl`.
+- History uses a 24-hour ring buffer in `/var/lib/netwatchdog/history.json` with a hard limit of 8640 samples.
+- Events are human readable JSONL in `/var/log/netwatchdog/events.jsonl` and duplicate events are suppressed for 60 seconds.
 - Config is centralized at `/etc/netwatchdog/config.yaml`.
 
 ## Services
@@ -27,6 +27,8 @@ git clone -b feature/oled-v1 https://github.com/vasinanonk-art/netwatchdog.git
 cd netwatchdog
 sudo ./install.sh
 ```
+
+The installer restarts only NetWatchDog services whose installed files changed. It does not manage or restart Smart Condo Dashboard.
 
 ## Update
 
@@ -67,6 +69,8 @@ sudo netwatchdogctl restart netwatchdog-oled
 sudo netwatchdogctl backup
 sudo netwatchdogctl restore /var/lib/netwatchdog/backups/netwatchdog-backup-YYYYMMDD-HHMMSS.tar.gz
 ```
+
+Backups are verified after creation. Restore verifies the archive before applying it, writes files atomically, verifies restored files, and creates a rollback backup before restore. If post-restore verification fails, NetWatchDog attempts an automatic rollback.
 
 ## Update Manager
 
