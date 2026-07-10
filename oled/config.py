@@ -30,6 +30,6 @@ SCREEN_SAVER_BLANK_SEC = get_int(_cfg, "oled.screen_saver_blank_sec", 2) if get_
 
 BRIGHTNESS_ENABLED = get_bool(_cfg, "oled.brightness_enabled", True) if get_bool else True
 DAY_CONTRAST = get_int(_cfg, "oled.day_brightness", 160) if get_int else 160
-NIGHT_CONTRAST = get_int(_cfg, "oled.night_brightness", 40) if get_int else 40
-DAY_START_HOUR = get_int(_cfg, "oled.day_start_hour", 7) if get_int else 7
+NIGHT_CONTRAST = get_int(_cfg, "oled.night_brightness", 32) if get_int else 32
+DAY_START_HOUR = get_int(_cfg, "oled.day_start_hour", 6) if get_int else 6
 NIGHT_START_HOUR = get_int(_cfg, "oled.night_start_hour", 22) if get_int else 22
