@@ -40,19 +40,12 @@ def status_signature(status):
         status.get("iface"),
         status.get("gateway"),
         status.get("internet"),
-        status.get("gateway_ping"),
-        status.get("internet_ping"),
-        status.get("last_ping"),
-        status.get("retry"),
         status.get("failover"),
         status.get("restore"),
         status.get("ip"),
-        status.get("rssi"),
-        status.get("cpu"),
-        status.get("ram"),
-        status.get("temp"),
         health.get("score"),
         health.get("status"),
+        tuple(health.get("reasons") or ()),
         status.get("last_event"),
         status.get("last_event_at"),
     )
@@ -98,14 +91,16 @@ def main():
         if popup.show_link_event(display, link_event):
             last_activity = time.time()
             last_render_key = None
+            was_blank = False
             time.sleep(config.POPUP_SEC)
         elif popup.show_internet_event(display, net_event):
             last_activity = time.time()
             last_render_key = None
+            was_blank = False
             time.sleep(config.POPUP_SEC)
 
         now = time.time()
-        if screensaver.should_blank(now, last_activity, config.SCREEN_SAVER_SEC, config.SCREEN_SAVER_BLANK_SEC):
+        if now - last_activity >= 600:
             if not was_blank:
                 display.power(False)
                 was_blank = True
