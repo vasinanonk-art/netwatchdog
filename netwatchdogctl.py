@@ -13,6 +13,7 @@ ALLOWED_MEMBERS = {
 }
 JSON_MEMBERS = {"var/lib/netwatchdog/history.json", "run/netwatchdog/status.json"}
 JSONL_MEMBERS = {"var/log/netwatchdog/events.jsonl"}
+SUPPORT_DIR = Path("/var/lib/netwatchdog/support")
 
 
 def out(payload: object) -> int:
@@ -264,12 +265,63 @@ def doctor() -> int:
     return 0 if overall else 1
 
 
+def _write_command_output(path: Path, args: list[str], timeout: int = 30) -> None:
+    code, text = run_cmd(args, timeout)
+    path.write_text(f"command: {' '.join(args)}\nexit_code: {code}\n\n{text}\n", encoding="utf-8")
+
+
+def support() -> int:
+    SUPPORT_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    target = SUPPORT_DIR / f"support-{stamp}.tar.gz"
+    work = Path(tempfile.mkdtemp(prefix=f"support-{stamp}-", dir=str(SUPPORT_DIR)))
+    try:
+        files = {
+            STATUS_PATH: "status.json",
+            HISTORY_PATH: "history.json",
+            EVENT_LOG_PATH: "events.jsonl",
+            CONFIG_PATH: "config.yaml",
+        }
+        for source, name in files.items():
+            if source.exists():
+                shutil.copy2(source, work / name)
+
+        _write_command_output(work / "journal-netwatchdog.txt", ["journalctl", "-u", "netwatchdog", "-n", "500", "--no-pager", "-l"], 30)
+        _write_command_output(work / "journal-dashboard.txt", ["journalctl", "-u", "netwatchdog-dashboard", "-n", "500", "--no-pager", "-l"], 30)
+        _write_command_output(work / "journal-oled.txt", ["journalctl", "-u", "netwatchdog-oled", "-n", "500", "--no-pager", "-l"], 30)
+
+        status_parts = []
+        for service in ("netwatchdog", "netwatchdog-dashboard", "netwatchdog-oled"):
+            code, text = run_cmd(["systemctl", "status", service, "--no-pager", "-l"], 20)
+            status_parts.append(f"===== {service} (exit {code}) =====\n{text}\n")
+        (work / "systemctl-status.txt").write_text("\n".join(status_parts), encoding="utf-8")
+
+        _write_command_output(work / "ip-route.txt", ["ip", "route"], 10)
+        _write_command_output(work / "ip-addr.txt", ["ip", "addr"], 10)
+        _write_command_output(work / "iw-dev.txt", ["iw", "dev"], 10)
+        _write_command_output(work / "uname.txt", ["uname", "-a"], 10)
+        _write_command_output(work / "uptime.txt", ["uptime"], 10)
+
+        with tarfile.open(target, "w:gz") as tar:
+            for item in sorted(work.iterdir()):
+                tar.add(item, arcname=item.name)
+    except (OSError, tarfile.TarError) as exc:
+        print(f"Support bundle failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+    print(f"Support archive: {target}")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="netwatchdogctl"); sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("restart"); r.add_argument("service")
     sub.add_parser("backup"); rs = sub.add_parser("restore"); rs.add_argument("archive")
     u = sub.add_parser("update"); u.add_argument("action", choices=["info", "pull"])
-    rb = sub.add_parser("rollback"); rb.add_argument("commit"); sub.add_parser("selftest"); sub.add_parser("doctor")
+    rb = sub.add_parser("rollback"); rb.add_argument("commit")
+    sub.add_parser("selftest"); sub.add_parser("doctor"); sub.add_parser("support")
     a = p.parse_args()
     if a.cmd == "restart": return restart(a.service)
     if a.cmd == "backup": return backup()
@@ -278,5 +330,6 @@ def main() -> int:
     if a.cmd == "rollback": return rollback(a.commit)
     if a.cmd == "selftest": return selftest()
     if a.cmd == "doctor": return doctor()
+    if a.cmd == "support": return support()
     return 2
 if __name__ == "__main__": sys.exit(main())
