@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse, json, os, shutil, sys, tarfile, tempfile, time
 from pathlib import Path
-from netwatchdog_common import BACKUP_DIR, CONFIG_PATH, EVENT_LOG_PATH, HISTORY_PATH, STATUS_PATH, append_event, cpu_temp_c, disk_percent, ensure_dirs, load_config, memory_percent, read_json, run_cmd
+from netwatchdog_common import BACKUP_DIR, CONFIG_PATH, EVENT_LOG_PATH, HISTORY_PATH, STATUS_PATH, VERSION, append_event, cpu_temp_c, disk_percent, ensure_dirs, git_commit, load_config, memory_percent, read_json, run_cmd
 
 ALLOWED_MEMBERS = {
     "etc/netwatchdog/config.yaml": CONFIG_PATH,
@@ -31,7 +31,7 @@ def _validate_json_bytes(name: str, data: bytes) -> tuple[bool, str]:
         if name in JSON_MEMBERS:
             json.loads(data.decode("utf-8"))
         elif name in JSONL_MEMBERS:
-            for i, line in enumerate(data.decode("utf-8").splitlines(), 1):
+            for line in data.decode("utf-8").splitlines():
                 if line.strip():
                     json.loads(line)
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -215,12 +215,61 @@ def selftest() -> int:
     return out({"ok": ok, "checks": checks, "services": svc, "status": read_json(STATUS_PATH, {})})
 
 
+def _pass_fail(ok: bool) -> str:
+    return "PASS" if ok else "FAIL"
+
+
+def _format_uptime(seconds: object) -> str:
+    try:
+        total = max(0, int(seconds))
+    except (TypeError, ValueError):
+        return "unknown"
+    days, rem = divmod(total, 86400)
+    hours, rem = divmod(rem, 3600)
+    minutes, secs = divmod(rem, 60)
+    return f"{days}d {hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def doctor() -> int:
+    status = read_json(STATUS_PATH, {})
+    status = status if isinstance(status, dict) else {}
+    network = status.get("network") if isinstance(status.get("network"), dict) else {}
+    usb = network.get("usb") if isinstance(network.get("usb"), dict) else {}
+    onboard = network.get("onboard") if isinstance(network.get("onboard"), dict) else {}
+    health = status.get("health") if isinstance(status.get("health"), dict) else {}
+    services = status.get("services") if isinstance(status.get("services"), dict) else {}
+
+    usb_ok = bool(usb.get("connected"))
+    onboard_ok = bool(onboard.get("connected"))
+    gateway_ok = usb.get("gateway_ms") is not None if status.get("active") == "USB_PRIMARY" else onboard.get("gateway_ms") is not None
+    internet_ok = network.get("internet_ms") is not None
+    oled_ok = run_cmd(["systemctl", "is-active", "--quiet", "netwatchdog-oled"], 5)[0] == 0
+    dashboard_ok = run_cmd(["systemctl", "is-active", "--quiet", "netwatchdog-dashboard"], 5)[0] == 0
+    services_ok = all(value == "active" for value in services.values()) if services else False
+    health_ok = health.get("status") in {"OK", "DEGRADED"}
+    overall = all((usb_ok, onboard_ok, gateway_ok, internet_ok, oled_ok, dashboard_ok, services_ok, health_ok))
+
+    print(f"Version: {status.get('version', VERSION)}")
+    print(f"Git Commit: {status.get('git_commit', git_commit())}")
+    print(f"Uptime: {_format_uptime(status.get('uptime_sec'))}")
+    print(f"Health: {health.get('status', 'unknown')} ({health.get('score', 'unknown')})")
+    print(f"USB WiFi: {_pass_fail(usb_ok)}")
+    print(f"Onboard WiFi: {_pass_fail(onboard_ok)}")
+    print(f"Gateway: {_pass_fail(gateway_ok)}")
+    print(f"Internet: {_pass_fail(internet_ok)}")
+    print(f"OLED: {_pass_fail(oled_ok)}")
+    print(f"Dashboard: {_pass_fail(dashboard_ok)}")
+    print(f"Services: {_pass_fail(services_ok)}")
+    print(f"Overall: {_pass_fail(overall)}")
+    return 0 if overall else 1
+
+
 def main() -> int:
     p = argparse.ArgumentParser(prog="netwatchdogctl"); sub = p.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("restart"); r.add_argument("service")
     sub.add_parser("backup"); rs = sub.add_parser("restore"); rs.add_argument("archive")
     u = sub.add_parser("update"); u.add_argument("action", choices=["info", "pull"])
-    rb = sub.add_parser("rollback"); rb.add_argument("commit"); sub.add_parser("selftest")
+    rb = sub.add_parser("rollback"); rb.add_argument("commit"); sub.add_parser("selftest"); sub.add_parser("doctor")
     a = p.parse_args()
     if a.cmd == "restart": return restart(a.service)
     if a.cmd == "backup": return backup()
@@ -228,5 +277,6 @@ def main() -> int:
     if a.cmd == "update": return update_info() if a.action == "info" else pull()
     if a.cmd == "rollback": return rollback(a.commit)
     if a.cmd == "selftest": return selftest()
+    if a.cmd == "doctor": return doctor()
     return 2
 if __name__ == "__main__": sys.exit(main())
