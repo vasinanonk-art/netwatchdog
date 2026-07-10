@@ -90,8 +90,7 @@ if copy_file health_engine.py "$APP_DIR/health_engine.py" 0644; then NETWATCHDOG
 if copy_file history_engine.py "$APP_DIR/history_engine.py" 0644; then NETWATCHDOG_CHANGED=1; fi
 if copy_file netwatchdog_common.py "$APP_DIR/netwatchdog_common.py" 0644; then NETWATCHDOG_CHANGED=1; DASHBOARD_CHANGED=1; OLED_CHANGED=1; fi
 if copy_file dashboard.py "$APP_DIR/dashboard.py" 0755; then DASHBOARD_CHANGED=1; fi
-if copy_file netwatchdogctl.py "$APP_DIR/netwatchdogctl.py" 0755; then :; fi
-ln -sf "$APP_DIR/netwatchdogctl.py" /usr/local/bin/netwatchdogctl
+install -m 755 "$SRC_DIR/netwatchdogctl.py" /usr/local/bin/netwatchdogctl
 
 if [ ! -f "$CFG_DIR/config.yaml" ]; then
   install -m 0644 "$SRC_DIR/config/netwatchdog.yaml.example" "$CFG_DIR/config.yaml"
