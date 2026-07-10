@@ -135,23 +135,36 @@ class OLED:
             pages.append(buf)
         return pages
 
+    @staticmethod
+    def _changed_runs(current, previous):
+        start = None
+        for index, value in enumerate(current):
+            changed = previous is None or previous[index] != value
+            if changed and start is None:
+                start = index
+            elif not changed and start is not None:
+                yield start, index
+                start = None
+        if start is not None:
+            yield start, len(current)
+
     def show(self, image, force=False):
         self.power(True)
         pages = self._pages(image)
         previous = self._last_pages
-        changed = False
+        updated = False
         for page, buf in enumerate(pages):
-            if not force and previous is not None and previous[page] == buf:
-                continue
-            if not self.cmd(0xB0 + page):
-                continue
-            if not self.cmd(0x00):
-                continue
-            if not self.cmd(0x10):
-                continue
-            if self.data(buf):
-                changed = True
-        if changed or force or previous is None:
+            old = None if force or previous is None else previous[page]
+            for start, end in self._changed_runs(buf, old):
+                if not self.cmd(0xB0 + page):
+                    continue
+                if not self.cmd(start & 0x0F):
+                    continue
+                if not self.cmd(0x10 | ((start >> 4) & 0x0F)):
+                    continue
+                if self.data(buf[start:end]):
+                    updated = True
+        if updated or force or previous is None:
             self._last_pages = pages
 
     def _fit(self, text, max_px=128):
