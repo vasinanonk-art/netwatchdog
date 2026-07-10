@@ -22,7 +22,7 @@ STATUS_PATHS = [
 ]
 
 PAGE_INTERVAL_SEC = 3
-POPUP_SEC = get_int(_cfg, "oled.popup_timeout_sec", 8) if get_int else 8
+POPUP_SEC = 5
 PIXEL_SHIFT = get_bool(_cfg, "oled.pixel_shift", True) if get_bool else True
 BURN_SHIFT_SEC = get_int(_cfg, "oled.burn_shift_sec", 300) if get_int else 300
 SCREEN_SAVER_SEC = get_int(_cfg, "oled.screen_saver_sec", 300) if get_int else 300
