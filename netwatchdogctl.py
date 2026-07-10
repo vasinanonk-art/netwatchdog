@@ -3,6 +3,12 @@ from __future__ import annotations
 
 import argparse, json, os, shutil, sys, tarfile, tempfile, time
 from pathlib import Path
+
+APP_DIR = Path("/opt/netwatchdog")
+app_dir = str(APP_DIR)
+if app_dir not in sys.path:
+    sys.path.insert(0, app_dir)
+
 from netwatchdog_common import BACKUP_DIR, CONFIG_PATH, EVENT_LOG_PATH, HISTORY_PATH, STATUS_PATH, VERSION, append_event, cpu_temp_c, disk_percent, ensure_dirs, git_commit, load_config, memory_percent, read_json, run_cmd
 
 ALLOWED_MEMBERS = {
