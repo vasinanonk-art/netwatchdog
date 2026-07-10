@@ -125,3 +125,15 @@ restart_if_changed netwatchdog-oled "$OLED_CHANGED"
 
 systemctl status netwatchdog --no-pager -l || true
 systemctl status netwatchdog-dashboard --no-pager -l || true
+
+SELFTEST_OUTPUT=$(netwatchdogctl selftest) || {
+  echo "ERROR: netwatchdogctl selftest could not run." >&2
+  exit 1
+}
+printf '%s\n' "$SELFTEST_OUTPUT"
+if ! printf '%s\n' "$SELFTEST_OUTPUT" | grep -q '"ok": true'; then
+  echo "ERROR: NetWatchDog installation selftest failed." >&2
+  exit 1
+fi
+
+echo "Installation completed successfully."
