@@ -114,6 +114,7 @@ apt-get install -y --no-install-recommends python3 git iproute2 iputils-ping wir
 install -d "$APP_DIR" "$CFG_DIR" /run/netwatchdog /var/lib/netwatchdog/backups /var/log/netwatchdog /etc/logrotate.d "$STATE_DIR"
 
 if copy_file netwatchdog.py "$APP_DIR/netwatchdog.py" 0755; then NETWATCHDOG_CHANGED=1; fi
+if copy_file netwatchdog_standby.py "$APP_DIR/netwatchdog_standby.py" 0755; then NETWATCHDOG_CHANGED=1; fi
 if copy_file status_writer.py "$APP_DIR/status_writer.py" 0755; then NETWATCHDOG_CHANGED=1; fi
 if copy_file core_config.py "$APP_DIR/core_config.py" 0644; then NETWATCHDOG_CHANGED=1; OLED_CHANGED=1; fi
 if copy_file event_engine.py "$APP_DIR/event_engine.py" 0644; then NETWATCHDOG_CHANGED=1; fi
