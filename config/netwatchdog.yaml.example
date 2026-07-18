@@ -33,9 +33,14 @@ watchdog:
   service_fail_limit: 3
   service_heal_cooldown: 300
 
-# Backup Wi-Fi is observed at low frequency while USB primary is healthy.
-# These keys are read from the merged network configuration.
+# Backup Wi-Fi policy:
+#   active   - continuously maintain the onboard link using the legacy heal policy
+#   standby  - observe slowly and recover only when USB failover is required
+#   disabled - never use or recover onboard Wi-Fi
 network:
+  onboard_backup_mode: standby
+  onboard_standby_probe_interval_sec: 300
+  onboard_recovery_max_attempts: 2
   onboard_probe_interval_sec: 60
   onboard_heal_failure_duration_sec: 600
   onboard_heal_max_per_hour: 3
