@@ -17,6 +17,8 @@ except Exception:
 
 
 class OLED:
+    FULL_REFRESH_INTERVAL_SEC = 60.0
+
     def __init__(self, bus=config.I2C_BUS, addr=config.I2C_ADDR):
         self.bus_id = bus
         self.bus = smbus.SMBus(bus)
@@ -27,6 +29,12 @@ class OLED:
         self._last_pages = None
         self._display_on = True
         self._last_recover = 0.0
+        self._force_next_frame = True
+        self.partial_updates = 0
+        self.full_refreshes = 0
+        self.last_full_refresh = 0.0
+        self.recoveries = 0
+        self.page_write_failures = 0
         self._init_display()
 
     def _event(self, name, detail=""):
@@ -42,6 +50,24 @@ class OLED:
     def _write_data(self, values):
         for i in range(0, len(values), 16):
             self.bus.write_i2c_block_data(self.addr, 0x40, values[i:i + 16])
+
+    def request_force_refresh(self):
+        """Make the next rendered frame a silent full-buffer refresh."""
+        self._force_next_frame = True
+
+    def refresh_due(self, now=None):
+        now = time.monotonic() if now is None else float(now)
+        return self._force_next_frame or self.last_full_refresh <= 0 or now - self.last_full_refresh >= self.FULL_REFRESH_INTERVAL_SEC
+
+    def diagnostics(self):
+        """OLED-only runtime diagnostics; not written to shared status/history."""
+        return {
+            "partial_updates": self.partial_updates,
+            "full_refreshes": self.full_refreshes,
+            "last_full_refresh": self.last_full_refresh,
+            "recoveries": self.recoveries,
+            "page_write_failures": self.page_write_failures,
+        }
 
     def _recover(self):
         now = time.monotonic()
@@ -59,6 +85,8 @@ class OLED:
             self._display_on = True
             for c in self._init_sequence():
                 self._write_cmd(c)
+            self.recoveries += 1
+            self.request_force_refresh()
             self._event("OLED Recovered", "I2C display reinitialized")
             return True
         except OSError:
@@ -148,24 +176,56 @@ class OLED:
         if start is not None:
             yield start, len(current)
 
+    def _write_page_run(self, page, start, values):
+        if not self.cmd(0xB0 + page):
+            self.page_write_failures += 1
+            self.request_force_refresh()
+            return False
+        if not self.cmd(start & 0x0F):
+            self.page_write_failures += 1
+            self.request_force_refresh()
+            return False
+        if not self.cmd(0x10 | ((start >> 4) & 0x0F)):
+            self.page_write_failures += 1
+            self.request_force_refresh()
+            return False
+        if not self.data(values):
+            self.page_write_failures += 1
+            self.request_force_refresh()
+            return False
+        return True
+
     def show(self, image, force=False):
         self.power(True)
+        now = time.monotonic()
+        full_refresh = bool(force or self.refresh_due(now))
         pages = self._pages(image)
         previous = self._last_pages
         updated = False
+        failed = False
+
         for page, buf in enumerate(pages):
-            old = None if force or previous is None else previous[page]
+            old = None if full_refresh or previous is None else previous[page]
             for start, end in self._changed_runs(buf, old):
-                if not self.cmd(0xB0 + page):
-                    continue
-                if not self.cmd(start & 0x0F):
-                    continue
-                if not self.cmd(0x10 | ((start >> 4) & 0x0F)):
-                    continue
-                if self.data(buf[start:end]):
+                if self._write_page_run(page, start, buf[start:end]):
                     updated = True
-        if updated or force or previous is None:
-            self._last_pages = pages
+                else:
+                    failed = True
+
+        if failed:
+            # Never publish a cache that may differ from the hardware framebuffer.
+            self._last_pages = None
+            self.request_force_refresh()
+            return False
+
+        self._last_pages = pages
+        if full_refresh:
+            self.full_refreshes += 1
+            self.last_full_refresh = now
+            self._force_next_frame = False
+        elif updated:
+            self.partial_updates += 1
+        return True
 
     def _fit(self, text, max_px=128):
         text = str(text)
@@ -176,14 +236,14 @@ class OLED:
             text = text[:-1]
         return text + ellipsis if text else ""
 
-    def text_screen(self, lines, shift=(0, 0)):
+    def text_screen(self, lines, shift=(0, 0), force=False):
         img = self.image()
         d = self.draw(img)
         x0, y0 = shift
         max_px = self.width - max(0, x0) - 1
         for y, line in zip((0 + y0, 10 + y0, 20 + y0), lines[:3]):
             d.text((x0, y), self._fit(line, max_px), font=self.font, fill=255)
-        self.show(img)
+        return self.show(img, force=force)
 
     def popup(self, title, line2="", line3=""):
         img = self.image()
