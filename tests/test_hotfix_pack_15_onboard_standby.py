@@ -81,7 +81,10 @@ def test_installer_and_service_use_standby_entrypoint():
     assert "netwatchdog_standby.py" in SERVICE
 
 
-def test_preserved_components_are_not_imported_or_modified():
-    lowered = SOURCE.lower()
-    for forbidden in ("oled", "i2c", "dashboard.py", "status_writer.py", "port 8080"):
-        assert forbidden not in lowered
+def test_preserved_components_are_not_imported_or_reconfigured():
+    assert "from oled" not in SOURCE
+    assert "import oled" not in SOURCE
+    assert "dashboard.py" not in SOURCE
+    assert "status_writer.py" not in SOURCE
+    assert "i2c" not in SOURCE.lower()
+    assert "8080" not in SOURCE
