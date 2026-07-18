@@ -32,6 +32,14 @@ file_hash() {
   cksum "$1" | awk '{print $1":"$2}'
 }
 
+tree_hash() {
+  find "$1" -type f -print | LC_ALL=C sort | while IFS= read -r file; do
+    rel=${file#"$1"/}
+    printf '%s:' "$rel"
+    cksum "$file"
+  done | cksum | awk '{print $1":"$2}'
+}
+
 copy_file() {
   src="$SRC_DIR/$1"
   dst="$2"
@@ -67,6 +75,29 @@ copy_file() {
   [ "$changed" -eq 1 ]
 }
 
+install_oled_package() {
+  src="$SRC_DIR/oled"
+  dst="$APP_DIR/oled"
+  if [ ! -d "$src" ]; then
+    echo "missing source directory: $src" >&2
+    exit 1
+  fi
+  hash=$(tree_hash "$src")
+  state_file="$STATE_DIR/oled-package.cksum"
+  old_hash=$(cat "$state_file" 2>/dev/null || true)
+  src_real=$(real_path "$src")
+  dst_real=$(real_path "$dst")
+
+  if [ "$src_real" != "$dst_real" ]; then
+    rm -rf "$dst"
+    cp -R "$src" "$dst"
+  fi
+  find "$dst" -type d -exec chmod 0755 {} +
+  find "$dst" -type f -name '*.py' -exec chmod 0644 {} +
+  printf '%s\n' "$hash" > "$state_file"
+  [ "$hash" != "$old_hash" ]
+}
+
 restart_if_changed() {
   service="$1"
   changed="$2"
@@ -90,6 +121,7 @@ if copy_file health_engine.py "$APP_DIR/health_engine.py" 0644; then NETWATCHDOG
 if copy_file history_engine.py "$APP_DIR/history_engine.py" 0644; then NETWATCHDOG_CHANGED=1; fi
 if copy_file netwatchdog_common.py "$APP_DIR/netwatchdog_common.py" 0644; then NETWATCHDOG_CHANGED=1; DASHBOARD_CHANGED=1; OLED_CHANGED=1; fi
 if copy_file dashboard.py "$APP_DIR/dashboard.py" 0755; then DASHBOARD_CHANGED=1; fi
+if install_oled_package; then OLED_CHANGED=1; fi
 install -m 755 "$SRC_DIR/netwatchdogctl.py" /usr/local/bin/netwatchdogctl
 
 if [ ! -f "$CFG_DIR/config.yaml" ]; then
@@ -125,6 +157,7 @@ restart_if_changed netwatchdog-oled "$OLED_CHANGED"
 
 systemctl status netwatchdog --no-pager -l || true
 systemctl status netwatchdog-dashboard --no-pager -l || true
+systemctl status netwatchdog-oled --no-pager -l || true
 
 SELFTEST_OUTPUT=$(netwatchdogctl selftest) || {
   echo "ERROR: netwatchdogctl selftest could not run." >&2
