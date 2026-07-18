@@ -88,16 +88,22 @@ def main():
         if link_event or net_event:
             last_activity = time.time()
 
+        popup_rendered = False
         if popup.show_link_event(display, link_event):
             last_activity = time.time()
             last_render_key = None
             was_blank = False
+            popup_rendered = True
             time.sleep(config.POPUP_SEC)
         elif popup.show_internet_event(display, net_event):
             last_activity = time.time()
             last_render_key = None
             was_blank = False
+            popup_rendered = True
             time.sleep(config.POPUP_SEC)
+        if popup_rendered:
+            # The first normal frame after a popup silently rewrites the full buffer.
+            display.request_force_refresh()
 
         now = time.time()
         if now - last_activity >= 600:
@@ -111,6 +117,7 @@ def main():
         woke_from_blank = False
         if was_blank:
             display.power(True)
+            display.request_force_refresh()
             was_blank = False
             woke_from_blank = True
 
@@ -129,7 +136,8 @@ def main():
         shift = screensaver.shift_for_tick(shift_tick, config.PIXEL_SHIFT)
         page = screen_index % len(dashboard.SCREENS)
         render_key = (page, shift, signature)
-        if not (status_changed or page_changed or shift_changed or woke_from_blank or render_key != last_render_key):
+        refresh_due = display.refresh_due()
+        if not (status_changed or page_changed or shift_changed or woke_from_blank or refresh_due or render_key != last_render_key):
             time.sleep(1)
             continue
 
